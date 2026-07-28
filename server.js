@@ -11,11 +11,14 @@ const {
   GEMINI_API_KEY, PAYSTACK_SECRET,
   TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN,
   CRON_SECRET = "change-me",
+  ADMIN_PASSWORD,
+  SESSION_SECRET = "change-me",
   PORT = 8080,
 } = process.env;
 
 const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 const app = express();
+app.set("trust proxy", 1); // Render sits behind a proxy — needed for req.secure on the session cookie
 
 const log = (vendor_id, conversation_id, action, detail) =>
   db.from("agent_logs").insert({ vendor_id, conversation_id, action, detail }).then(() => {});
@@ -305,5 +308,368 @@ function twiml(res, text) {
   );
 }
 function safeJson(s) { try { return JSON.parse(s); } catch { return null; } }
+function esc(s) {
+  return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function waFormat(n) {
+  n = String(n ?? "").trim();
+  if (!n) return n;
+  if (!n.startsWith("whatsapp:")) n = "whatsapp:" + (n.startsWith("+") ? n : "+" + n);
+  return n;
+}
+function ar(fn) { return (req, res, next) => fn(req, res, next).catch(next); }
+
+// =====================================================================
+// Admin panel — operator-only for now (session cookie, no per-vendor
+// scoping yet). Every handler reads req.session.role; adding vendor
+// logins later means adding a vendorId claim and filtering queries by it.
+// =====================================================================
+
+function signSession(payload) {
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const sig = crypto.createHmac("sha256", SESSION_SECRET).update(body).digest("base64url");
+  return `${body}.${sig}`;
+}
+function verifySession(token) {
+  if (!token) return null;
+  const [body, sig] = token.split(".");
+  if (!body || !sig) return null;
+  const expected = crypto.createHmac("sha256", SESSION_SECRET).update(body).digest("base64url");
+  const a = Buffer.from(sig), b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(body, "base64url").toString());
+    if (payload.exp && Date.now() > payload.exp) return null;
+    return payload;
+  } catch { return null; }
+}
+function parseCookies(req) {
+  const h = req.headers.cookie;
+  if (!h) return {};
+  return Object.fromEntries(h.split(";").map((c) => {
+    const i = c.indexOf("=");
+    return [c.slice(0, i).trim(), decodeURIComponent(c.slice(i + 1).trim())];
+  }));
+}
+function setSessionCookie(req, res, payload) {
+  const token = signSession(payload);
+  res.setHeader("Set-Cookie",
+    `sika_admin=${token}; HttpOnly; Path=/; Max-Age=${7 * 24 * 60 * 60}; SameSite=Lax${req.secure ? "; Secure" : ""}`);
+}
+function clearSessionCookie(res) {
+  res.setHeader("Set-Cookie", "sika_admin=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax");
+}
+function requireAuth(req, res, next) {
+  const session = verifySession(parseCookies(req).sika_admin);
+  if (!session) return res.redirect("/admin/login");
+  req.session = session;
+  next();
+}
+
+function adminPage(title, body) {
+  return `<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${esc(title)} — Sika Agent Admin</title><style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:system-ui,sans-serif;background:#101A2E;color:#E9EEF7;min-height:100dvh}
+a{color:#FFC33D;text-decoration:none}
+header{background:#0A1220;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;position:sticky;top:0;z-index:5}
+header b{font-size:.95rem}
+nav{display:flex;gap:14px;font-size:.85rem;align-items:center}
+nav a{color:#8FA0BC}nav a:hover{color:#E9EEF7}
+main{padding:16px;max-width:900px;margin:0 auto}
+h1{font-size:1.1rem;margin-bottom:12px}
+h2{font-size:.95rem;margin:20px 0 10px;color:#FFC33D}
+.card{background:#182640;border:1px solid #2A3A5C;border-radius:12px;padding:14px;margin-bottom:12px}
+.grid{display:grid;grid-template-columns:1fr;gap:10px}
+@media(min-width:640px){.grid.cols2{grid-template-columns:1fr 1fr}.grid.cols3{grid-template-columns:1fr 1fr 1fr}}
+label{display:block;font-size:.75rem;color:#8FA0BC;margin-bottom:4px}
+input,select,textarea{width:100%;background:#101A2E;border:1px solid #2A3A5C;border-radius:8px;color:#E9EEF7;padding:9px 10px;font-size:16px;font-family:inherit}
+textarea{resize:vertical}
+.field{margin-bottom:10px}
+button,.btn{background:#FFC33D;border:none;border-radius:8px;padding:9px 14px;font-weight:700;color:#0A1220;font-size:.85rem;cursor:pointer;display:inline-block}
+.btn.secondary{background:none;border:1px solid #3A4B6E;color:#8FA0BC}
+.btn.danger{background:#D9534F;color:#fff}
+.btn.small{padding:5px 10px;font-size:.75rem}
+form.inline{display:inline}
+table{width:100%;border-collapse:collapse;font-size:.85rem}
+th,td{text-align:left;padding:8px 6px;border-bottom:1px solid #2A3A5C}
+th{color:#8FA0BC;font-weight:600;font-size:.75rem;text-transform:uppercase}
+.tablewrap{overflow-x:auto}
+.pill{display:inline-block;padding:2px 8px;border-radius:99px;font-size:.7rem;font-weight:700}
+.pill.paid{background:#1F4A2E;color:#7FE0A0}
+.pill.pending{background:#4A3E1F;color:#FFC33D}
+.pill.cancelled{background:#4A1F1F;color:#E08080}
+.pill.paused{background:#4A1F1F;color:#E08080}
+.pill.live{background:#1F4A2E;color:#7FE0A0}
+.pill.instock{background:#1F4A2E;color:#7FE0A0}
+.pill.outofstock{background:#4A1F1F;color:#E08080}
+.muted{color:#8FA0BC;font-size:.8rem}
+.msg{max-width:84%;padding:9px 12px;border-radius:14px;font-size:.9rem;line-height:1.45;white-space:pre-wrap;word-break:break-word;margin-bottom:8px}
+.msg.customer{background:#1D2C49;margin-right:auto}
+.msg.agent{background:#274A2F;margin-left:auto}
+.msg.vendor{background:#4A3E1F;margin-left:auto}
+.stat{font-size:1.4rem;font-weight:800}
+.error{background:#4A1F1F;color:#E08080;padding:10px 12px;border-radius:8px;margin-bottom:12px;font-size:.85rem}
+.row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+</style></head><body>
+<header><b>💰 Sika Agent Admin</b>
+<nav><a href="/admin">Dashboard</a><a href="/admin/orders">Orders</a>
+<form class="inline" method="post" action="/admin/logout"><button class="btn small secondary" type="submit">Logout</button></form></nav>
+</header>
+<main>${body}</main>
+</body></html>`;
+}
+
+app.get("/admin/login", (req, res) => {
+  res.type("html").send(`<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Admin Login — Sika Agent</title>
+<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:system-ui,sans-serif;background:#101A2E;color:#E9EEF7;min-height:100dvh;display:flex;align-items:center;justify-content:center;padding:20px}
+.card{background:#182640;border:1px solid #2A3A5C;border-radius:12px;padding:24px;width:100%;max-width:340px}
+h1{font-size:1.1rem;margin-bottom:16px}input{width:100%;background:#101A2E;border:1px solid #2A3A5C;border-radius:8px;color:#E9EEF7;padding:11px 12px;font-size:16px;margin-bottom:12px}
+button{width:100%;background:#FFC33D;border:none;border-radius:8px;padding:11px;font-weight:700;color:#0A1220;font-size:.9rem;cursor:pointer}
+.error{background:#4A1F1F;color:#E08080;padding:10px 12px;border-radius:8px;margin-bottom:12px;font-size:.85rem}</style>
+</head><body><div class="card"><h1>💰 Sika Agent Admin</h1>
+${req.query.err ? `<div class="error">Wrong password.</div>` : ""}
+<form method="post" action="/admin/login">
+<input type="password" name="password" placeholder="Password" autofocus required>
+<button type="submit">Log in</button>
+</form></div></body></html>`);
+});
+
+app.post("/admin/login", express.urlencoded({ extended: false }), (req, res) => {
+  if (!ADMIN_PASSWORD || req.body.password !== ADMIN_PASSWORD) {
+    return res.redirect("/admin/login?err=1");
+  }
+  setSessionCookie(req, res, { role: "operator", exp: Date.now() + 7 * 24 * 60 * 60 * 1000 });
+  res.redirect("/admin");
+});
+
+app.post("/admin/logout", (_req, res) => {
+  clearSessionCookie(res);
+  res.redirect("/admin/login");
+});
+
+const admin = express.Router();
+admin.use(requireAuth);
+
+admin.get("/", ar(async (_req, res) => {
+  const { data: vendors } = await db.from("vendors").select("*").order("created_at", { ascending: false });
+  const stats = await Promise.all((vendors ?? []).map(async (v) => {
+    const [{ data: paid }, { count: convos }, { count: escs }] = await Promise.all([
+      db.from("orders").select("amount").eq("vendor_id", v.id).eq("status", "paid"),
+      db.from("conversations").select("id", { count: "exact", head: true }).eq("vendor_id", v.id),
+      db.from("escalations").select("id", { count: "exact", head: true }).eq("vendor_id", v.id).eq("resolved", false),
+    ]);
+    return { revenue: (paid ?? []).reduce((s, o) => s + o.amount, 0), orders: (paid ?? []).length, convos: convos ?? 0, escs: escs ?? 0 };
+  }));
+
+  const cards = (vendors ?? []).map((v, i) => `
+<a class="card" style="display:block" href="/admin/vendors/${v.id}">
+<div class="row"><b>${esc(v.shop_name)}</b><span class="pill ${v.active ? "live" : "cancelled"}">${v.active ? "active" : "inactive"}</span></div>
+<div class="muted">${esc(v.owner_name)} · ${esc(v.city || "—")}${v.is_demo ? " · demo" : ""}</div>
+<div class="row" style="margin-top:8px">
+<div><div class="stat">GHS ${stats[i].revenue}</div><div class="muted">${stats[i].orders} paid orders</div></div>
+<div class="muted">${stats[i].convos} conversations${stats[i].escs ? ` · ${stats[i].escs} open escalation${stats[i].escs > 1 ? "s" : ""}` : ""}</div>
+</div></a>`).join("") || `<div class="card muted">No vendors yet — add your first one below.</div>`;
+
+  res.type("html").send(adminPage("Dashboard", `
+<div class="row"><h1>Vendors</h1><a class="btn" href="/admin/vendors/new">+ Add vendor</a></div>
+${cards}`));
+}));
+
+admin.get("/vendors/new", ar(async (_req, res) => {
+  res.type("html").send(adminPage("Add vendor", vendorForm()));
+}));
+
+function vendorForm(v = {}, action = "/admin/vendors") {
+  return `<h1>${v.id ? "Edit vendor" : "Add vendor"}</h1>
+<form method="post" action="${action}">
+<div class="card">
+<div class="grid cols2">
+<div class="field"><label>Shop name</label><input name="shop_name" required value="${esc(v.shop_name)}"></div>
+<div class="field"><label>Owner name</label><input name="owner_name" required value="${esc(v.owner_name)}"></div>
+<div class="field"><label>Owner WhatsApp (personal)</label><input name="owner_phone" required placeholder="+233XXXXXXXXX" value="${esc((v.owner_phone || "").replace("whatsapp:", ""))}"></div>
+<div class="field"><label>Twilio business number</label><input name="twilio_number" required placeholder="+1415XXXXXXX" value="${esc((v.twilio_number || "").replace("whatsapp:", ""))}"></div>
+<div class="field"><label>City</label><input name="city" value="${esc(v.city)}"></div>
+<div class="field"><label>Demo vendor?</label><select name="is_demo"><option value="">No</option><option value="1" ${v.is_demo ? "selected" : ""}>Yes (fake payment flow)</option></select></div>
+</div>
+<div class="field"><label>Delivery note</label><textarea name="delivery_note" rows="2" placeholder="Accra GHS 20, Madina GHS 25, next-day delivery">${esc(v.delivery_note)}</textarea></div>
+<div class="field"><label>Tone note</label><textarea name="tone_note" rows="2" placeholder="warm, uses emojis, light pidgin ok">${esc(v.tone_note)}</textarea></div>
+${v.id ? `<div class="field"><label>Status</label><select name="active"><option value="1" ${v.active ? "selected" : ""}>Active</option><option value="" ${!v.active ? "selected" : ""}>Inactive</option></select></div>` : ""}
+<button type="submit">${v.id ? "Save changes" : "Create vendor"}</button>
+</div></form>`;
+}
+
+admin.post("/vendors", express.urlencoded({ extended: false }), ar(async (req, res) => {
+  const b = req.body;
+  await db.from("vendors").insert({
+    shop_name: b.shop_name, owner_name: b.owner_name,
+    owner_phone: waFormat(b.owner_phone), twilio_number: waFormat(b.twilio_number),
+    city: b.city || null, delivery_note: b.delivery_note || null, tone_note: b.tone_note || null,
+    is_demo: !!b.is_demo,
+  });
+  res.redirect("/admin");
+}));
+
+admin.get("/vendors/:id", ar(async (req, res) => {
+  const { id } = req.params;
+  const [{ data: vendor }, { data: products }, { data: convos }] = await Promise.all([
+    db.from("vendors").select("*").eq("id", id).single(),
+    db.from("products").select("*").eq("vendor_id", id).order("created_at", { ascending: true }),
+    db.from("conversations").select("*").eq("vendor_id", id).order("created_at", { ascending: false }),
+  ]);
+  if (!vendor) return res.status(404).type("html").send(adminPage("Not found", `<p>Vendor not found.</p>`));
+
+  const convosWithLast = await Promise.all((convos ?? []).map(async (c) => {
+    const { data: last } = await db.from("messages").select("role, content, created_at")
+      .eq("conversation_id", c.id).order("created_at", { ascending: false }).limit(1).maybeSingle();
+    return { ...c, last };
+  }));
+
+  const productRows = (products ?? []).map((p) => `
+<tr><td>${esc(p.name)}</td><td>GHS ${p.price}</td><td class="muted">${esc(p.options || "—")}</td>
+<td><span class="pill ${p.in_stock ? "instock" : "outofstock"}">${p.in_stock ? "in stock" : "out of stock"}</span></td>
+<td style="white-space:nowrap">
+<form class="inline" method="post" action="/admin/vendors/${id}/products/${p.id}/toggle"><button class="btn small secondary" type="submit">${p.in_stock ? "Mark out" : "Mark in"}</button></form>
+<form class="inline" method="post" action="/admin/vendors/${id}/products/${p.id}/delete" onsubmit="return confirm('Delete this product?')"><button class="btn small danger" type="submit">Delete</button></form>
+</td></tr>`).join("");
+
+  const convoRows = (convosWithLast ?? []).map((c) => `
+<a class="card" style="display:block" href="/admin/vendors/${id}/conversations/${c.id}">
+<div class="row"><b>${esc(c.customer_number.replace("whatsapp:", ""))}</b>${c.ai_paused ? `<span class="pill paused">AI paused</span>` : ""}</div>
+<div class="muted">${c.last ? `${c.last.role}: ${esc(c.last.content).slice(0, 80)}` : "no messages yet"}</div>
+</a>`).join("") || `<div class="card muted">No conversations yet.</div>`;
+
+  res.type("html").send(adminPage(vendor.shop_name, `
+<div class="row"><h1>${esc(vendor.shop_name)}</h1><a class="btn secondary" href="/admin/orders?vendor_id=${id}">View orders</a></div>
+<p class="muted">${esc(vendor.owner_name)} · ${esc((vendor.owner_phone || "").replace("whatsapp:", ""))} · line ${esc((vendor.twilio_number || "").replace("whatsapp:", ""))}</p>
+
+<h2>Edit shop details</h2>
+${vendorForm(vendor, `/admin/vendors/${id}/edit`)}
+
+<h2>Catalog</h2>
+<div class="card tablewrap">
+<table><thead><tr><th>Product</th><th>Price</th><th>Options</th><th>Stock</th><th></th></tr></thead>
+<tbody>${productRows || `<tr><td colspan="5" class="muted">No products yet.</td></tr>`}</tbody></table>
+</div>
+<div class="card">
+<form method="post" action="/admin/vendors/${id}/products">
+<div class="grid cols2">
+<div class="field"><label>Product name</label><input name="name" required></div>
+<div class="field"><label>Price (GHS)</label><input name="price" type="number" min="0" required></div>
+<div class="field"><label>Options</label><input name="options" placeholder="S, M, L"></div>
+<div class="field"><label>Notes</label><input name="notes" placeholder="best seller"></div>
+</div>
+<button type="submit">Add product</button>
+</form>
+</div>
+
+<h2>Conversations</h2>
+${convoRows}`));
+}));
+
+admin.post("/vendors/:id/edit", express.urlencoded({ extended: false }), ar(async (req, res) => {
+  const b = req.body;
+  await db.from("vendors").update({
+    shop_name: b.shop_name, owner_name: b.owner_name,
+    owner_phone: waFormat(b.owner_phone), twilio_number: waFormat(b.twilio_number),
+    city: b.city || null, delivery_note: b.delivery_note || null, tone_note: b.tone_note || null,
+    is_demo: !!b.is_demo, active: !!b.active,
+  }).eq("id", req.params.id);
+  res.redirect(`/admin/vendors/${req.params.id}`);
+}));
+
+admin.post("/vendors/:id/products", express.urlencoded({ extended: false }), ar(async (req, res) => {
+  const b = req.body;
+  await db.from("products").insert({
+    vendor_id: req.params.id, name: b.name, price: Math.round(Number(b.price) || 0),
+    options: b.options || null, notes: b.notes || null,
+  });
+  res.redirect(`/admin/vendors/${req.params.id}`);
+}));
+
+admin.post("/vendors/:vid/products/:pid/toggle", ar(async (req, res) => {
+  const { data: p } = await db.from("products").select("in_stock").eq("id", req.params.pid).single();
+  if (p) await db.from("products").update({ in_stock: !p.in_stock }).eq("id", req.params.pid);
+  res.redirect(`/admin/vendors/${req.params.vid}`);
+}));
+
+admin.post("/vendors/:vid/products/:pid/delete", ar(async (req, res) => {
+  await db.from("products").delete().eq("id", req.params.pid);
+  res.redirect(`/admin/vendors/${req.params.vid}`);
+}));
+
+admin.get("/vendors/:vid/conversations/:cid", ar(async (req, res) => {
+  const { vid, cid } = req.params;
+  const [{ data: vendor }, { data: convo }, { data: messages }] = await Promise.all([
+    db.from("vendors").select("shop_name").eq("id", vid).single(),
+    db.from("conversations").select("*").eq("id", cid).single(),
+    db.from("messages").select("*").eq("conversation_id", cid).order("created_at", { ascending: true }),
+  ]);
+  if (!convo) return res.status(404).type("html").send(adminPage("Not found", `<p>Conversation not found.</p>`));
+
+  const bubbles = (messages ?? []).map((m) =>
+    `<div class="msg ${esc(m.role)}"><div>${esc(m.content)}</div><div class="muted" style="font-size:.7rem;margin-top:3px">${new Date(m.created_at).toLocaleString()}</div></div>`
+  ).join("");
+
+  res.type("html").send(adminPage("Conversation", `
+<div class="row"><h1>${esc(vendor?.shop_name)} · ${esc(convo.customer_number.replace("whatsapp:", ""))}</h1>
+<a class="btn secondary" href="/admin/vendors/${vid}">Back</a></div>
+<form method="post" action="/admin/vendors/${vid}/conversations/${cid}/pause" style="margin-bottom:14px">
+<button class="btn ${convo.ai_paused ? "" : "danger"}" type="submit">${convo.ai_paused ? "Resume AI" : "Pause AI (take over)"}</button>
+${convo.ai_paused ? `<span class="pill paused" style="margin-left:8px">AI currently paused</span>` : ""}
+</form>
+<div class="card">${bubbles || `<div class="muted">No messages yet.</div>`}</div>`));
+}));
+
+admin.post("/vendors/:vid/conversations/:cid/pause", ar(async (req, res) => {
+  const { data: c } = await db.from("conversations").select("ai_paused").eq("id", req.params.cid).single();
+  if (c) await db.from("conversations").update({ ai_paused: !c.ai_paused }).eq("id", req.params.cid);
+  res.redirect(`/admin/vendors/${req.params.vid}/conversations/${req.params.cid}`);
+}));
+
+async function fetchOrders(vendorId) {
+  let q = db.from("orders").select("*, vendors(shop_name)").order("created_at", { ascending: false });
+  if (vendorId) q = q.eq("vendor_id", vendorId);
+  const { data } = await q;
+  return data ?? [];
+}
+
+admin.get("/orders", ar(async (req, res) => {
+  const vendorId = req.query.vendor_id || "";
+  const orders = await fetchOrders(vendorId);
+  const revenue = orders.filter((o) => o.status === "paid").reduce((s, o) => s + o.amount, 0);
+  const rows = orders.map((o) => `
+<tr><td>${new Date(o.created_at).toLocaleDateString()}</td>
+<td>${esc(o.vendors?.shop_name || "—")}</td>
+<td>${esc(o.summary || "—")}</td>
+<td>GHS ${o.amount}</td>
+<td><span class="pill ${esc(o.status)}">${esc(o.status)}</span></td>
+<td class="muted">${esc(o.payment_ref || "—")}</td></tr>`).join("");
+
+  res.type("html").send(adminPage("Orders", `
+<div class="row"><h1>Orders</h1><a class="btn secondary" href="/admin/orders/export.csv${vendorId ? `?vendor_id=${vendorId}` : ""}">Export CSV</a></div>
+<div class="card row"><div><div class="stat">GHS ${revenue}</div><div class="muted">total paid revenue${vendorId ? " (this vendor)" : " (all vendors)"}</div></div>
+<div class="muted">${orders.length} orders total</div></div>
+<div class="card tablewrap">
+<table><thead><tr><th>Date</th><th>Vendor</th><th>Summary</th><th>Amount</th><th>Status</th><th>Ref</th></tr></thead>
+<tbody>${rows || `<tr><td colspan="6" class="muted">No orders yet.</td></tr>`}</tbody></table>
+</div>`));
+}));
+
+admin.get("/orders/export.csv", ar(async (req, res) => {
+  const orders = await fetchOrders(req.query.vendor_id || "");
+  const esc_csv = (s) => `"${String(s ?? "").replace(/"/g, '""')}"`;
+  const header = "date,vendor,summary,amount_ghs,status,payment_ref,paid_at\n";
+  const rows = orders.map((o) => [
+    o.created_at, o.vendors?.shop_name || "", o.summary || "", o.amount, o.status, o.payment_ref || "", o.paid_at || "",
+  ].map(esc_csv).join(",")).join("\n");
+  res.setHeader("Content-Type", "text/csv");
+  res.setHeader("Content-Disposition", `attachment; filename="sika-orders${req.query.vendor_id ? "-" + req.query.vendor_id : ""}.csv"`);
+  res.send(header + rows);
+}));
+
+app.use("/admin", admin);
 
 app.listen(PORT, () => console.log(`Sika Agent on :${PORT}`));

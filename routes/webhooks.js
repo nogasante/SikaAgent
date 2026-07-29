@@ -48,13 +48,26 @@ webhooks.post("/webhook/whatsapp", express.urlencoded({ extended: false }), asyn
       }
     }
 
-    const [{ data: products }, { data: history }] = await Promise.all([
+    const [{ data: products }, { data: history }, { data: pastOrders }] = await Promise.all([
       db.from("products").select("*").eq("vendor_id", vendor.id),
       db.from("messages").select("role, content").eq("conversation_id", convo.id)
         .order("created_at", { ascending: true }).limit(24),
+      db.from("orders").select("summary, amount, status, paid_at, payment_ref")
+        .eq("conversation_id", convo.id).order("created_at", { ascending: false }).limit(5),
     ]);
 
-    const raw = await gemini(buildSystem(vendor, products ?? []), history ?? []);
+    const raw = await gemini(buildSystem(vendor, products ?? [], pastOrders ?? []), history ?? []);
+
+    // Model unreachable (quota/outage) — say something neutral and keep the
+    // thread live so the next message retries. Do NOT claim we misunderstood
+    // them, and do NOT pause: a transient blip shouldn't freeze the chat.
+    if (raw === null) {
+      const holding = "One moment please 🙏";
+      await db.from("messages").insert({ conversation_id: convo.id, role: "agent", content: holding });
+      await log(vendor.id, convo.id, "model_unavailable", { from });
+      return twiml(res, holding);
+    }
+
     let reply = raw;
 
     // Tolerant matchers: allow whitespace/fences and grab the JSON object.
@@ -65,28 +78,64 @@ webhooks.post("/webhook/whatsapp", express.urlencoded({ extended: false }), asyn
       reply = raw.slice(0, ord.index).trim();
       const a = safeJson(ord[1]);
       if (a?.amount > 0) {
-        const payment_ref = `SIKA-${Date.now()}`;
-        const { data: order } = await db.from("orders").insert({
-          vendor_id: vendor.id, conversation_id: convo.id,
-          summary: a.summary, amount: Math.round(a.amount), payment_ref,
-        }).select().single();
-        await log(vendor.id, convo.id, "created_order", order);
+        const amount = Math.round(a.amount);
+
+        // The model often re-emits ACTION_ORDER while the customer is still
+        // confirming ("yes", "ok"). Reuse the open order for the same amount
+        // instead of billing this conversation twice.
+        const { data: open } = await db.from("orders").select("*")
+          .eq("conversation_id", convo.id).eq("status", "pending").eq("amount", amount)
+          .gte("created_at", new Date(Date.now() - 60 * 60 * 1000).toISOString())
+          .order("created_at", { ascending: false }).limit(1).maybeSingle();
+
+        let order = open;
+        if (order) {
+          await log(vendor.id, convo.id, "reused_order", { payment_ref: order.payment_ref, amount });
+        } else {
+          const payment_ref = `SIKA-${Date.now()}`;
+          ({ data: order } = await db.from("orders").insert({
+            vendor_id: vendor.id, conversation_id: convo.id,
+            summary: a.summary, amount, payment_ref,
+          }).select().single());
+          await log(vendor.id, convo.id, "created_order", order);
+        }
         const link = await paystackLink(order, vendor);
-        await log(vendor.id, convo.id, "sent_payment_link", { payment_ref, link });
+        await log(vendor.id, convo.id, "sent_payment_link", { payment_ref: order.payment_ref, link });
         reply += `\n\nPay GHS ${order.amount} securely here (MoMo or card):\n${link}`;
       }
     } else if (escalate) {
       reply = raw.slice(0, escalate.index).trim();
       const reason = safeJson(escalate[1])?.reason ?? "needs owner";
+      const cust = from.replace("whatsapp:", "");
+
+      // Was this thread already handed over? Used only to avoid re-alerting the
+      // owner; the pause below is what actually stops the loop.
+      const { data: prior } = await db.from("escalations").select("created_at")
+        .eq("conversation_id", convo.id).eq("resolved", false)
+        .order("created_at", { ascending: false }).limit(1).maybeSingle();
+      const alertedRecently = prior && Date.now() - new Date(prior.created_at).getTime() < 30 * 60 * 1000;
+
       await db.from("escalations").insert({ vendor_id: vendor.id, conversation_id: convo.id, reason });
       await log(vendor.id, convo.id, "escalated", { reason });
-      await sendWhatsApp(vendor.twilio_number, vendor.owner_phone,
-        `⚠️ ${vendor.shop_name}: customer ${from.replace("whatsapp:", "")} needs you — ${reason}\nReply "PAUSE ${from.replace("whatsapp:", "")}" to take over the thread.`);
+
+      // Escalating means a human is required, so hand the thread over and go
+      // quiet. Without this the agent keeps repeating its holding line to a
+      // customer who is already angry, and re-alerts the owner every message.
+      await db.from("conversations").update({ ai_paused: true }).eq("id", convo.id);
+      await log(vendor.id, convo.id, "paused", { auto: true, reason });
+
+      if (!alertedRecently) {
+        await sendWhatsApp(vendor.twilio_number, vendor.owner_phone,
+          `⚠️ ${vendor.shop_name}: ${cust} needs you — ${reason}\nThe AI has stopped replying on this chat, so please answer them directly.\nSend "RESUME ${cust}" to hand it back to the AI.`);
+      }
     }
 
     // Safety net: strip ANY leftover ACTION_ remnant (even truncated) so it never reaches the customer.
     reply = reply.replace(/ACTION_[A-Z_]*[\s\S]*$/g, "").trim();
-    if (!reply) reply = `Thanks for your message! One moment, we're checking that for you 🙏`;
+    reply = stripScaffolding(reply);
+    // Deliberately makes no promise to "check and update" — nothing here sends a
+    // follow-up, so promising one is how the agent ends up stalling a customer.
+    if (!reply) reply = `Sorry, I didn't quite get that — could you put it another way? 🙏`;
 
     await db.from("messages").insert({ conversation_id: convo.id, role: "agent", content: reply });
     await log(vendor.id, convo.id, "replied", { chars: reply.length });
@@ -97,14 +146,32 @@ webhooks.post("/webhook/whatsapp", express.urlencoded({ extended: false }), asyn
   }
 });
 
+// Last line of defence against model scratchpad reaching a customer. The prompt
+// forbids it and thinkingBudget is 0, but a leak here is seen by a real buyer.
+function stripScaffolding(text) {
+  let t = text;
+  // Drop leading meta lines: "Drafting Response:", "**Analysis**", "Plan:" etc.
+  t = t.replace(/^\s*(?:[*_#>\s-]*)(?:drafting|draft|response|reply|thinking|thought|analysis|plan|reasoning|answer)\b[^\n:]*:\s*/i, "");
+  // A leaked draft is often wrapped in quotes and bullets — unwrap a single one.
+  t = t.replace(/^\s*[*\-•]\s*/, "");
+  t = t.replace(/^\s*["“](.+)["”]\s*$/s, "$1");
+  return t.trim();
+}
+
 // ---------- Vendor console (owner texts their own line) ----------
 async function vendorConsole(res, vendor, body) {
   const pause = body.match(/^(pause|resume)\s+(\+?\d{9,15})$/i);
   if (pause) {
     const paused = pause[1].toLowerCase() === "pause";
     const cust = "whatsapp:" + (pause[2].startsWith("+") ? pause[2] : "+" + pause[2]);
-    await db.from("conversations").update({ ai_paused: paused })
-      .eq("vendor_id", vendor.id).eq("customer_number", cust);
+    const { data: convo } = await db.from("conversations")
+      .update({ ai_paused: paused })
+      .eq("vendor_id", vendor.id).eq("customer_number", cust).select("id").maybeSingle();
+    // Handing the thread back means the owner dealt with it.
+    if (!paused && convo) {
+      await db.from("escalations").update({ resolved: true })
+        .eq("conversation_id", convo.id).eq("resolved", false);
+    }
     await log(vendor.id, null, paused ? "paused" : "resumed", { customer: cust });
     return twiml(res, paused
       ? `AI paused for ${pause[2]} — the thread is yours. Send "RESUME ${pause[2]}" when done.`

@@ -306,9 +306,16 @@ ${bubbles ? `<div class="card pad"><div class="thread">${bubbles}</div></div>` :
 }));
 
 admin.post("/vendors/:vid/conversations/:cid/pause", ar(async (req, res) => {
-  const { data: c } = await db.from("conversations").select("ai_paused").eq("id", req.params.cid).single();
-  if (c) await db.from("conversations").update({ ai_paused: !c.ai_paused }).eq("id", req.params.cid);
-  res.redirect(`/admin/vendors/${req.params.vid}/conversations/${req.params.cid}`);
+  const { cid, vid } = req.params;
+  const { data: c } = await db.from("conversations").select("ai_paused").eq("id", cid).single();
+  if (c) {
+    await db.from("conversations").update({ ai_paused: !c.ai_paused }).eq("id", cid);
+    // Resuming means the operator handled whatever was escalated.
+    if (c.ai_paused) {
+      await db.from("escalations").update({ resolved: true }).eq("conversation_id", cid).eq("resolved", false);
+    }
+  }
+  res.redirect(`/admin/vendors/${vid}/conversations/${cid}`);
 }));
 
 // ---------- orders ----------

@@ -370,50 +370,83 @@ function adminPage(title, body) {
   return `<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)} — Sika Agent Admin</title><style>
+:root{
+  --bg:#0B1220; --bg2:#0E1730; --surface:#151F38; --surface2:#1B2745; --border:#263657; --border-soft:#1F2C4C;
+  --text:#EDF1F9; --muted:#8CA0C4; --muted-dim:#5F7299;
+  --gold:#FFC33D; --gold-soft:#3A3320; --green:#3FE07E; --green-soft:#123222; --red:#F0685F; --red-soft:#3A1B1E;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px -8px rgba(0,0,0,.45); --shadow-sm:0 1px 3px rgba(0,0,0,.35);
+  --radius:14px; --radius-sm:9px;
+}
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:system-ui,sans-serif;background:#101A2E;color:#E9EEF7;min-height:100dvh}
-a{color:#FFC33D;text-decoration:none}
-header{background:#0A1220;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;position:sticky;top:0;z-index:5}
-header b{font-size:.95rem}
-nav{display:flex;gap:14px;font-size:.85rem;align-items:center}
-nav a{color:#8FA0BC}nav a:hover{color:#E9EEF7}
-main{padding:16px;max-width:900px;margin:0 auto}
-h1{font-size:1.1rem;margin-bottom:12px}
-h2{font-size:.95rem;margin:20px 0 10px;color:#FFC33D}
-.card{background:#182640;border:1px solid #2A3A5C;border-radius:12px;padding:14px;margin-bottom:12px}
+html{scrollbar-color:var(--border) transparent}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif;background:
+  radial-gradient(1200px 600px at 15% -10%, #16214a 0%, transparent 60%),
+  radial-gradient(900px 500px at 110% 10%, #1a1030 0%, transparent 55%),
+  var(--bg);
+  color:var(--text);min-height:100dvh;-webkit-font-smoothing:antialiased;letter-spacing:.01em}
+a{color:var(--gold);text-decoration:none}
+header{background:rgba(11,18,32,.85);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--border-soft);padding:13px 18px;display:flex;justify-content:space-between;
+  align-items:center;flex-wrap:wrap;gap:8px;position:sticky;top:0;z-index:5}
+header b{font-size:.95rem;font-weight:800;letter-spacing:.01em;display:flex;align-items:center;gap:8px}
+nav{display:flex;gap:18px;font-size:.83rem;align-items:center}
+nav a{color:var(--muted);font-weight:600;transition:color .15s}
+nav a:hover{color:var(--text)}
+main{padding:20px 16px 60px;max-width:920px;margin:0 auto}
+h1{font-size:1.25rem;font-weight:800;margin-bottom:14px;letter-spacing:-.01em}
+h2{font-size:.78rem;margin:26px 0 10px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-weight:700}
+.card{background:linear-gradient(180deg,var(--surface2),var(--surface));border:1px solid var(--border);
+  border-radius:var(--radius);padding:16px;margin-bottom:12px;box-shadow:var(--shadow-sm);transition:border-color .15s,transform .15s,box-shadow .15s}
+a.card:hover{border-color:#3A4E80;transform:translateY(-1px);box-shadow:var(--shadow)}
 .grid{display:grid;grid-template-columns:1fr;gap:10px}
 @media(min-width:640px){.grid.cols2{grid-template-columns:1fr 1fr}.grid.cols3{grid-template-columns:1fr 1fr 1fr}}
-label{display:block;font-size:.75rem;color:#8FA0BC;margin-bottom:4px}
-input,select,textarea{width:100%;background:#101A2E;border:1px solid #2A3A5C;border-radius:8px;color:#E9EEF7;padding:9px 10px;font-size:16px;font-family:inherit}
+label{display:block;font-size:.72rem;color:var(--muted);margin-bottom:5px;font-weight:600;letter-spacing:.02em}
+input,select,textarea{width:100%;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-sm);
+  color:var(--text);padding:10px 11px;font-size:16px;font-family:inherit;transition:border-color .15s,box-shadow .15s}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--gold);box-shadow:0 0 0 3px rgba(255,195,61,.15)}
 textarea{resize:vertical}
-.field{margin-bottom:10px}
-button,.btn{background:#FFC33D;border:none;border-radius:8px;padding:9px 14px;font-weight:700;color:#0A1220;font-size:.85rem;cursor:pointer;display:inline-block}
-.btn.secondary{background:none;border:1px solid #3A4B6E;color:#8FA0BC}
-.btn.danger{background:#D9534F;color:#fff}
-.btn.small{padding:5px 10px;font-size:.75rem}
+.field{margin-bottom:12px}
+button,.btn{background:var(--gold);border:none;border-radius:var(--radius-sm);padding:10px 16px;font-weight:700;
+  color:#1A1206;font-size:.85rem;cursor:pointer;display:inline-block;transition:filter .15s,transform .05s;
+  box-shadow:0 1px 0 rgba(255,255,255,.15) inset}
+button:hover,.btn:hover{filter:brightness(1.08)}
+button:active,.btn:active{transform:translateY(1px)}
+.btn.secondary{background:none;border:1px solid var(--border);color:var(--muted);box-shadow:none}
+.btn.secondary:hover{color:var(--text);border-color:#3A4E80}
+.btn.danger{background:var(--red);color:#fff}
+.btn.small{padding:6px 11px;font-size:.75rem}
 form.inline{display:inline}
 table{width:100%;border-collapse:collapse;font-size:.85rem}
-th,td{text-align:left;padding:8px 6px;border-bottom:1px solid #2A3A5C}
-th{color:#8FA0BC;font-weight:600;font-size:.75rem;text-transform:uppercase}
-.tablewrap{overflow-x:auto}
-.pill{display:inline-block;padding:2px 8px;border-radius:99px;font-size:.7rem;font-weight:700}
-.pill.paid{background:#1F4A2E;color:#7FE0A0}
-.pill.pending{background:#4A3E1F;color:#FFC33D}
-.pill.cancelled{background:#4A1F1F;color:#E08080}
-.pill.paused{background:#4A1F1F;color:#E08080}
-.pill.live{background:#1F4A2E;color:#7FE0A0}
-.pill.instock{background:#1F4A2E;color:#7FE0A0}
-.pill.outofstock{background:#4A1F1F;color:#E08080}
-.muted{color:#8FA0BC;font-size:.8rem}
-.msg{max-width:84%;padding:9px 12px;border-radius:14px;font-size:.9rem;line-height:1.45;white-space:pre-wrap;word-break:break-word;margin-bottom:8px}
-.msg.customer{background:#1D2C49;margin-right:auto}
-.msg.agent{background:#274A2F;margin-left:auto}
-.msg.vendor{background:#4A3E1F;margin-left:auto}
-.stat{font-size:1.4rem;font-weight:800}
-.error{background:#4A1F1F;color:#E08080;padding:10px 12px;border-radius:8px;margin-bottom:12px;font-size:.85rem}
+th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--border-soft)}
+th{color:var(--muted);font-weight:700;font-size:.7rem;text-transform:uppercase;letter-spacing:.06em}
+tbody tr{transition:background .15s}
+tbody tr:hover{background:rgba(255,255,255,.02)}
+.tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.pill{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:99px;font-size:.68rem;font-weight:700;letter-spacing:.02em}
+.pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.pill.paid{background:var(--green-soft);color:var(--green)}
+.pill.pending{background:var(--gold-soft);color:var(--gold)}
+.pill.cancelled{background:var(--red-soft);color:var(--red)}
+.pill.paused{background:var(--red-soft);color:var(--red)}
+.pill.live{background:var(--green-soft);color:var(--green)}
+.pill.instock{background:var(--green-soft);color:var(--green)}
+.pill.outofstock{background:var(--red-soft);color:var(--red)}
+.muted{color:var(--muted);font-size:.8rem}
+.msg{max-width:84%;padding:10px 13px;border-radius:16px;font-size:.9rem;line-height:1.45;white-space:pre-wrap;word-break:break-word;margin-bottom:8px;box-shadow:var(--shadow-sm)}
+.msg.customer{background:var(--surface2);border:1px solid var(--border);margin-right:auto;border-bottom-left-radius:4px}
+.msg.agent{background:#16321F;border:1px solid #24462E;margin-left:auto;border-bottom-right-radius:4px}
+.msg.vendor{background:var(--gold-soft);border:1px solid #4A3E1F;margin-left:auto;border-bottom-right-radius:4px}
+.stat{font-size:1.7rem;font-weight:800;letter-spacing:-.02em}
+.stat-label{color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;font-weight:700;margin-bottom:2px}
+.error{background:var(--red-soft);color:var(--red);padding:11px 13px;border-radius:var(--radius-sm);margin-bottom:12px;font-size:.85rem;border:1px solid #4A2226}
 .row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.empty{background:transparent;border:1.5px dashed var(--border);border-radius:var(--radius);padding:32px 16px;
+  text-align:center;color:var(--muted-dim);font-size:.85rem}
+.empty .big{font-size:1.6rem;display:block;margin-bottom:8px;opacity:.7}
+::-webkit-scrollbar{height:8px;width:8px}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:99px}
 </style></head><body>
-<header><b>💰 Sika Agent Admin</b>
+<header><b>💰 Sika Agent <span style="color:var(--muted);font-weight:600">Admin</span></b>
 <nav><a href="/admin">Dashboard</a><a href="/admin/orders">Orders</a>
 <form class="inline" method="post" action="/admin/logout"><button class="btn small secondary" type="submit">Logout</button></form></nav>
 </header>
@@ -424,12 +457,30 @@ th{color:#8FA0BC;font-weight:600;font-size:.75rem;text-transform:uppercase}
 app.get("/admin/login", (req, res) => {
   res.type("html").send(`<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Admin Login — Sika Agent</title>
-<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:system-ui,sans-serif;background:#101A2E;color:#E9EEF7;min-height:100dvh;display:flex;align-items:center;justify-content:center;padding:20px}
-.card{background:#182640;border:1px solid #2A3A5C;border-radius:12px;padding:24px;width:100%;max-width:340px}
-h1{font-size:1.1rem;margin-bottom:16px}input{width:100%;background:#101A2E;border:1px solid #2A3A5C;border-radius:8px;color:#E9EEF7;padding:11px 12px;font-size:16px;margin-bottom:12px}
-button{width:100%;background:#FFC33D;border:none;border-radius:8px;padding:11px;font-weight:700;color:#0A1220;font-size:.9rem;cursor:pointer}
-.error{background:#4A1F1F;color:#E08080;padding:10px 12px;border-radius:8px;margin-bottom:12px;font-size:.85rem}</style>
-</head><body><div class="card"><h1>💰 Sika Agent Admin</h1>
+<style>
+:root{--bg:#0B1220;--surface:#151F38;--surface2:#1B2745;--border:#263657;--text:#EDF1F9;--muted:#8CA0C4;--gold:#FFC33D;--red:#F0685F;--red-soft:#3A1B1E}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif;
+  background:radial-gradient(1200px 700px at 20% -10%,#16214a 0%,transparent 60%),
+  radial-gradient(900px 600px at 100% 110%,#1a1030 0%,transparent 55%),var(--bg);
+  color:var(--text);min-height:100dvh;display:flex;align-items:center;justify-content:center;padding:20px;-webkit-font-smoothing:antialiased}
+.card{background:linear-gradient(180deg,var(--surface2),var(--surface));border:1px solid var(--border);
+  border-radius:16px;padding:30px 26px;width:100%;max-width:340px;box-shadow:0 1px 2px rgba(0,0,0,.3),0 20px 50px -12px rgba(0,0,0,.5)}
+.brand{font-size:1.8rem;margin-bottom:4px}
+h1{font-size:1.05rem;font-weight:700;margin-bottom:2px}
+p.sub{color:var(--muted);font-size:.8rem;margin-bottom:20px}
+input{width:100%;background:#0E1730;border:1px solid var(--border);border-radius:9px;color:var(--text);
+  padding:11px 12px;font-size:16px;margin-bottom:14px;transition:border-color .15s,box-shadow .15s}
+input:focus{outline:none;border-color:var(--gold);box-shadow:0 0 0 3px rgba(255,195,61,.15)}
+button{width:100%;background:var(--gold);border:none;border-radius:9px;padding:12px;font-weight:700;
+  color:#1A1206;font-size:.9rem;cursor:pointer;transition:filter .15s}
+button:hover{filter:brightness(1.08)}
+.error{background:var(--red-soft);color:var(--red);border:1px solid #4A2226;padding:10px 12px;border-radius:9px;margin-bottom:14px;font-size:.85rem}
+</style>
+</head><body><div class="card">
+<div class="brand">💰</div>
+<h1>Sika Agent Admin</h1>
+<p class="sub">Operator access only</p>
 ${req.query.err ? `<div class="error">Wrong password.</div>` : ""}
 <form method="post" action="/admin/login">
 <input type="password" name="password" placeholder="Password" autofocus required>
@@ -464,17 +515,25 @@ admin.get("/", ar(async (_req, res) => {
     return { revenue: (paid ?? []).reduce((s, o) => s + o.amount, 0), orders: (paid ?? []).length, convos: convos ?? 0, escs: escs ?? 0 };
   }));
 
+  const totalRevenue = stats.reduce((s, x) => s + x.revenue, 0);
+  const totalEscs = stats.reduce((s, x) => s + x.escs, 0);
+
   const cards = (vendors ?? []).map((v, i) => `
 <a class="card" style="display:block" href="/admin/vendors/${v.id}">
 <div class="row"><b>${esc(v.shop_name)}</b><span class="pill ${v.active ? "live" : "cancelled"}">${v.active ? "active" : "inactive"}</span></div>
-<div class="muted">${esc(v.owner_name)} · ${esc(v.city || "—")}${v.is_demo ? " · demo" : ""}</div>
-<div class="row" style="margin-top:8px">
-<div><div class="stat">GHS ${stats[i].revenue}</div><div class="muted">${stats[i].orders} paid orders</div></div>
-<div class="muted">${stats[i].convos} conversations${stats[i].escs ? ` · ${stats[i].escs} open escalation${stats[i].escs > 1 ? "s" : ""}` : ""}</div>
-</div></a>`).join("") || `<div class="card muted">No vendors yet — add your first one below.</div>`;
+<div class="muted" style="margin-top:2px">${esc(v.owner_name)} · ${esc(v.city || "—")}${v.is_demo ? " · demo" : ""}</div>
+<div class="row" style="margin-top:12px;align-items:flex-end">
+<div><div class="stat-label">Revenue</div><div class="stat" style="color:var(--gold)">GHS ${stats[i].revenue}</div><div class="muted">${stats[i].orders} paid orders</div></div>
+<div class="muted" style="text-align:right">${stats[i].convos} conversation${stats[i].convos === 1 ? "" : "s"}${stats[i].escs ? `<br><span style="color:var(--red)">⚠ ${stats[i].escs} open escalation${stats[i].escs > 1 ? "s" : ""}</span>` : ""}</div>
+</div></a>`).join("") || `<div class="empty"><span class="big">🏪</span>No vendors yet — add your first one to get started.</div>`;
 
   res.type("html").send(adminPage("Dashboard", `
 <div class="row"><h1>Vendors</h1><a class="btn" href="/admin/vendors/new">+ Add vendor</a></div>
+${(vendors ?? []).length ? `
+<div class="grid cols2" style="margin-bottom:18px">
+<div class="card"><div class="stat-label">Total revenue</div><div class="stat" style="color:var(--gold)">GHS ${totalRevenue}</div></div>
+<div class="card"><div class="stat-label">Open escalations</div><div class="stat" style="color:${totalEscs ? "var(--red)" : "var(--text)"}">${totalEscs}</div></div>
+</div>` : ""}
 ${cards}`));
 }));
 
@@ -538,8 +597,8 @@ admin.get("/vendors/:id", ar(async (req, res) => {
   const convoRows = (convosWithLast ?? []).map((c) => `
 <a class="card" style="display:block" href="/admin/vendors/${id}/conversations/${c.id}">
 <div class="row"><b>${esc(c.customer_number.replace("whatsapp:", ""))}</b>${c.ai_paused ? `<span class="pill paused">AI paused</span>` : ""}</div>
-<div class="muted">${c.last ? `${c.last.role}: ${esc(c.last.content).slice(0, 80)}` : "no messages yet"}</div>
-</a>`).join("") || `<div class="card muted">No conversations yet.</div>`;
+<div class="muted" style="margin-top:2px">${c.last ? `${c.last.role}: ${esc(c.last.content).slice(0, 80)}` : "no messages yet"}</div>
+</a>`).join("") || `<div class="empty"><span class="big">💬</span>No conversations yet.</div>`;
 
   res.type("html").send(adminPage(vendor.shop_name, `
 <div class="row"><h1>${esc(vendor.shop_name)}</h1>
@@ -662,12 +721,12 @@ admin.get("/orders", ar(async (req, res) => {
 <td class="muted">${esc(o.payment_ref || "—")}</td></tr>`).join("");
 
   res.type("html").send(adminPage("Orders", `
-<div class="row"><h1>Orders</h1><a class="btn secondary" href="/admin/orders/export.csv${vendorId ? `?vendor_id=${vendorId}` : ""}">Export CSV</a></div>
-<div class="card row"><div><div class="stat">GHS ${revenue}</div><div class="muted">total paid revenue${vendorId ? " (this vendor)" : " (all vendors)"}</div></div>
-<div class="muted">${orders.length} orders total</div></div>
+<div class="row"><h1>Orders</h1><a class="btn secondary" href="/admin/orders/export.csv${vendorId ? `?vendor_id=${vendorId}` : ""}">⬇ Export CSV</a></div>
+<div class="card row"><div><div class="stat-label">Total paid revenue${vendorId ? " (this vendor)" : " (all vendors)"}</div><div class="stat" style="color:var(--gold)">GHS ${revenue}</div></div>
+<div class="muted">${orders.length} order${orders.length === 1 ? "" : "s"} total</div></div>
 <div class="card tablewrap">
 <table><thead><tr><th>Date</th><th>Vendor</th><th>Summary</th><th>Amount</th><th>Status</th><th>Ref</th></tr></thead>
-<tbody>${rows || `<tr><td colspan="6" class="muted">No orders yet.</td></tr>`}</tbody></table>
+<tbody>${rows || `<tr><td colspan="6" class="muted" style="text-align:center;padding:24px">No orders yet.</td></tr>`}</tbody></table>
 </div>`));
 }));
 

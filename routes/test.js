@@ -36,7 +36,7 @@ function fresh(){sessionStorage.removeItem('n');chat.innerHTML='<div class="m sy
 function add(cls,text){const d=document.createElement('div');d.className='m '+cls;d.textContent=text;chat.appendChild(d);chat.scrollTop=chat.scrollHeight}
 async function send(e){e.preventDefault();const t=box.value.trim();if(!t)return false;box.value='';add('me',t);
 try{const r=await fetch('/webhook/whatsapp',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
-body:new URLSearchParams({From:num(),To:'${v.twilio_number}',Body:t})});
+body:new URLSearchParams({From:num(),To:'${v.twilio_number}',Body:t,Channel:'web'})});
 const x=await r.text();const doc=new DOMParser().parseFromString(x,'text/xml');
 const m=doc.querySelector('Message');add(m?'ai':'sys',m?m.textContent:'(agent stayed silent — thread may be paused)');}
 catch(err){add('sys','Error: '+err.message)}return false}

@@ -1,10 +1,10 @@
 import express from "express";
 import crypto from "node:crypto";
 import { db, log } from "../lib/db.js";
-import { sendWhatsApp } from "../lib/whatsapp.js";
+import { sendWhatsApp, sendTemplate } from "../lib/whatsapp.js";
 import { gemini, buildSystem } from "../lib/gemini.js";
 import { paystackLink } from "../lib/paystack.js";
-import { PAYSTACK_SECRET, CRON_SECRET } from "../lib/env.js";
+import { PAYSTACK_SECRET, CRON_SECRET, CONTENT_SID_PAY_NOW, CONTENT_SID_DEMO_PAY } from "../lib/env.js";
 import { twiml, safeJson } from "../lib/util.js";
 
 export const webhooks = express.Router();
@@ -15,6 +15,11 @@ webhooks.post("/webhook/whatsapp", express.urlencoded({ extended: false }), asyn
     const from = req.body.From ?? "";
     const to = req.body.To ?? "";
     const body = (req.body.Body ?? "").trim();
+    // Set by a tapped quick-reply button; more reliable than matching the label.
+    const buttonId = req.body.ButtonPayload ?? "";
+    // The browser cockpit at /test reads our TwiML and cannot render buttons,
+    // so it asks for the plain-text path instead.
+    const isWeb = req.body.Channel === "web";
     if (!from || !body) return twiml(res, "");
 
     const { data: vendor } = await db.from("vendors").select("*").eq("twilio_number", to).eq("active", true).single();
@@ -36,8 +41,8 @@ webhooks.post("/webhook/whatsapp", express.urlencoded({ extended: false }), asyn
     // Kill switch: vendor took over this thread — AI stays silent
     if (convo.ai_paused) return twiml(res, "");
 
-    // Demo payment simulation
-    if (vendor.is_demo && /^paid$/i.test(body)) {
+    // Demo payment simulation — typed "PAID", or the Pay button tapped.
+    if (vendor.is_demo && (/^paid$/i.test(body) || buttonId === "pay_now" || /^pay ghs/i.test(body))) {
       const { data: order } = await db.from("orders").select("*")
         .eq("conversation_id", convo.id).eq("status", "pending")
         .order("created_at", { ascending: false }).limit(1).single();
@@ -101,7 +106,32 @@ webhooks.post("/webhook/whatsapp", express.urlencoded({ extended: false }), asyn
         }
         const link = await paystackLink(order, vendor);
         await log(vendor.id, convo.id, "sent_payment_link", { payment_ref: order.payment_ref, link });
-        reply += `\n\nPay GHS ${order.amount} securely here (MoMo or card):\n${link}`;
+
+        // Buttons need the REST API (TwiML can't carry them), so on WhatsApp we
+        // send the prose first, then the tappable prompt as its own message.
+        const contentSid = vendor.is_demo ? CONTENT_SID_DEMO_PAY : CONTENT_SID_PAY_NOW;
+        const vars = vendor.is_demo
+          ? { 1: String(order.amount), 2: order.summary || "your order" }
+          : { 1: String(order.amount), 2: order.summary || "your order", 3: link };
+
+        // Try the buttons first: only if they actually went out do we skip the
+        // plain-text link. Sending prose before knowing would duplicate it when
+        // the template fails.
+        const sent = !isWeb && contentSid
+          ? await sendTemplate(vendor.twilio_number, from, contentSid, vars)
+          : false;
+        await log(vendor.id, convo.id, sent ? "sent_pay_buttons" : "sent_pay_text", { payment_ref: order.payment_ref });
+
+        if (sent) {
+          // The template is self-contained (summary, total, Pay button), so the
+          // model's line follows it as ordinary text via the TwiML reply.
+          await db.from("messages").insert({
+            conversation_id: convo.id, role: "agent",
+            content: `[Pay GHS ${order.amount} button] ${order.summary || ""}`.trim(),
+          });
+        } else {
+          reply += `\n\nPay GHS ${order.amount} securely here (MoMo or card):\n${link}`;
+        }
       }
     } else if (escalate) {
       reply = raw.slice(0, escalate.index).trim();

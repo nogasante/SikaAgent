@@ -542,7 +542,11 @@ admin.get("/vendors/:id", ar(async (req, res) => {
 </a>`).join("") || `<div class="card muted">No conversations yet.</div>`;
 
   res.type("html").send(adminPage(vendor.shop_name, `
-<div class="row"><h1>${esc(vendor.shop_name)}</h1><a class="btn secondary" href="/admin/orders?vendor_id=${id}">View orders</a></div>
+<div class="row"><h1>${esc(vendor.shop_name)}</h1>
+<div style="display:flex;gap:8px">
+<a class="btn secondary" href="/admin/orders?vendor_id=${id}">View orders</a>
+<form class="inline" method="post" action="/admin/vendors/${id}/delete" onsubmit="return confirm('Delete ${esc(vendor.shop_name).replace(/'/g, "\\'")} and all its products, conversations, and orders? This cannot be undone.')"><button class="btn danger" type="submit">Delete vendor</button></form>
+</div></div>
 <p class="muted">${esc(vendor.owner_name)} · ${esc((vendor.owner_phone || "").replace("whatsapp:", ""))} · line ${esc((vendor.twilio_number || "").replace("whatsapp:", ""))}</p>
 
 <h2>Edit shop details</h2>
@@ -578,6 +582,15 @@ admin.post("/vendors/:id/edit", express.urlencoded({ extended: false }), ar(asyn
     is_demo: !!b.is_demo, active: !!b.active,
   }).eq("id", req.params.id);
   res.redirect(`/admin/vendors/${req.params.id}`);
+}));
+
+admin.post("/vendors/:id/delete", ar(async (req, res) => {
+  const { id } = req.params;
+  await db.from("agent_logs").delete().eq("vendor_id", id);
+  await db.from("escalations").delete().eq("vendor_id", id);
+  await db.from("orders").delete().eq("vendor_id", id);
+  await db.from("vendors").delete().eq("id", id); // products, conversations, messages cascade
+  res.redirect("/admin");
 }));
 
 admin.post("/vendors/:id/products", express.urlencoded({ extended: false }), ar(async (req, res) => {

@@ -51,20 +51,17 @@ admin.get("/", ar(async (_req, res) => {
   const convos = stats.reduce((s, x) => s + x.convos, 0);
   const escs = stats.reduce((s, x) => s + x.escs, 0);
 
-  const cards = list.map((v, i) => `
-<a class="card" href="/admin/vendors/${v.id}">
-  <div class="row top">
-    <div>
-      <div style="font-weight:510">${esc(v.shop_name)}</div>
-      <div class="muted" style="margin-top:2px">${esc(v.owner_name)}${v.city ? " · " + esc(v.city) : ""}${v.is_demo ? " · demo" : ""}</div>
-    </div>
-    ${pill(v.active ? "good" : "", v.active ? "Active" : "Inactive")}
-  </div>
-  <div class="row" style="margin-top:14px">
-    <div><span class="stat">${ghs(stats[i].revenue)}</span> <span class="muted">· ${stats[i].orders} paid</span></div>
-    <div class="muted">${stats[i].convos} chat${stats[i].convos === 1 ? "" : "s"}${stats[i].escs ? ` · <span style="color:var(--bad)">${stats[i].escs} escalated</span>` : ""}</div>
-  </div>
-</a>`).join("");
+  const rows = list.map((v, i) => `
+<tr class="link" onclick="location='/admin/vendors/${v.id}'">
+  <td class="strong"><a class="rowlink" href="/admin/vendors/${v.id}">${esc(v.shop_name)}</a></td>
+  <td class="sub" data-l="Owner">${esc(v.owner_name)}</td>
+  <td class="sub" data-l="City">${esc(v.city || "—")}</td>
+  <td class="num r strong" data-l="Revenue">${ghs(stats[i].revenue)}</td>
+  <td class="num r sub" data-l="Paid orders">${stats[i].orders}</td>
+  <td class="num r sub" data-l="Chats">${stats[i].convos}</td>
+  <td class="num r" data-l="Escalations">${stats[i].escs ? `<span style="color:var(--bad)">${stats[i].escs}</span>` : `<span class="dim">0</span>`}</td>
+  <td class="r" data-l="Status">${pill(v.active ? "good" : "", v.active ? "Active" : "Inactive")}</td>
+</tr>`).join("");
 
   res.type("html").send(page("Vendors", `
 <div class="head">
@@ -72,13 +69,17 @@ admin.get("/", ar(async (_req, res) => {
   <a class="btn" href="/admin/vendors/new">Add vendor</a>
 </div>
 
-${list.length ? `
-<div class="card pad" style="margin-bottom:8px">
-  <div class="stat-label">Revenue collected by the AI</div>
-  <div class="hero">${ghs(revenue)}</div>
-  <div class="muted" style="margin-top:8px">${orders} paid order${orders === 1 ? "" : "s"} · ${convos} conversation${convos === 1 ? "" : "s"} handled${escs ? ` · ${escs} awaiting an owner` : ""}</div>
+<div class="kpis">
+  <div class="kpi"><div class="stat-label">Revenue collected</div><div class="hero">${ghs(revenue)}</div><div class="hint">by the agent, all time</div></div>
+  <div class="kpi"><div class="stat-label">Paid orders</div><div class="stat">${orders}</div><div class="hint">${orders ? `avg ${ghs(Math.round(revenue / orders))}` : "none yet"}</div></div>
+  <div class="kpi"><div class="stat-label">Conversations</div><div class="stat">${convos}</div><div class="hint">handled end to end</div></div>
+  <div class="kpi"><div class="stat-label">Escalations</div><div class="stat${escs ? "" : " q"}" ${escs ? 'style="color:var(--bad)"' : ""}>${escs}</div><div class="hint">${escs ? "waiting on an owner" : "nothing waiting"}</div></div>
 </div>
-${cards}` : empty("No vendors yet", "Add your first shop to put the agent to work.")}`,
+
+${list.length ? `<div class="tablewrap"><table>
+<thead><tr><th>Shop</th><th>Owner</th><th>City</th><th class="r">Revenue</th><th class="r">Paid</th><th class="r">Chats</th><th class="r">Esc.</th><th class="r">Status</th></tr></thead>
+<tbody>${rows}</tbody></table></div>`
+    : empty("No vendors yet", "Add your first shop to put the agent to work.")}`,
     { active: "dashboard" }));
 }));
 
@@ -159,28 +160,47 @@ admin.get("/vendors/:id", ar(async (req, res) => {
   if (!vendor) return res.status(404).type("html").send(page("Not found", `<h1>Vendor not found</h1>`));
 
   const withLast = await Promise.all((convos ?? []).map(async (c) => {
-    const { data: last } = await db.from("messages").select("role, content")
-      .eq("conversation_id", c.id).order("created_at", { ascending: false }).limit(1).maybeSingle();
-    return { ...c, last };
+    const [{ data: last }, { count: msgs }] = await Promise.all([
+      db.from("messages").select("role, content, created_at")
+        .eq("conversation_id", c.id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
+      db.from("messages").select("id", { count: "exact", head: true }).eq("conversation_id", c.id),
+    ]);
+    return { ...c, last, msgs: msgs ?? 0 };
   }));
 
   const productRows = (products ?? []).map((p) => `
 <tr>
-  <td style="color:var(--ink)">${esc(p.name)}</td>
-  <td class="num">GHS ${p.price}</td>
-  <td class="muted">${esc(p.options || "—")}</td>
-  <td>${pill(p.in_stock ? "good" : "bad", p.in_stock ? "In stock" : "Out of stock")}</td>
-  <td style="text-align:right">
+  <td class="strong">${esc(p.name)}</td>
+  <td class="num r" data-l="Price">GHS ${p.price}</td>
+  <td class="sub" data-l="Options">${esc(p.options || "—")}</td>
+  <td data-l="Stock">${pill(p.in_stock ? "good" : "bad", p.in_stock ? "In stock" : "Out of stock")}</td>
+  <td class="r"><div class="acts">
     <form class="inline" method="post" action="/admin/vendors/${id}/products/${p.id}/toggle"><button class="btn ghost sm" type="submit">${p.in_stock ? "Mark out" : "Mark in"}</button></form>
-    <form class="inline" style="margin-left:6px" method="post" action="/admin/vendors/${id}/products/${p.id}/delete" onsubmit="return confirm('Remove ${esc(p.name).replace(/'/g, "\\'")} from the catalog?')"><button class="btn danger sm" type="submit">Remove</button></form>
-  </td>
+    <form class="inline" method="post" action="/admin/vendors/${id}/products/${p.id}/delete" onsubmit="return confirm('Remove ${esc(p.name).replace(/'/g, "\\'")} from the catalog?')"><button class="btn danger sm" type="submit">Remove</button></form>
+  </div></td>
 </tr>`).join("");
 
-  const convoCards = withLast.map((c) => `
-<a class="card" href="/admin/vendors/${id}/conversations/${c.id}">
-  <div class="row"><span style="font-weight:510">${phone(c.customer_number)}</span>${c.ai_paused ? pill("bad", "AI paused") : ""}</div>
-  <div class="muted" style="margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.last ? `<span class="dim">${esc(c.last.role)}:</span> ${esc(c.last.content).slice(0, 110)}` : "No messages yet"}</div>
-</a>`).join("");
+  const when = (d) => {
+    if (!d) return "—";
+    const mins = Math.floor((Date.now() - new Date(d)) / 60000);
+    if (mins < 60) return `${Math.max(mins, 0)}m`;
+    if (mins < 1440) return `${Math.floor(mins / 60)}h`;
+    return `${Math.floor(mins / 1440)}d`;
+  };
+
+  const convoRows = withLast.map((c) => `
+<tr class="link" onclick="location='/admin/vendors/${id}/conversations/${c.id}'">
+  <td class="strong"><a class="rowlink" href="/admin/vendors/${id}/conversations/${c.id}">${phone(c.customer_number)}</a></td>
+  <td class="sub" data-l="Last"><span class="trunc">${c.last?.content?.trim()
+    ? `<span class="dim">${esc(c.last.role)}:</span> ${esc(c.last.content)}`
+    : `<span class="dim">${c.msgs ? "blank reply recorded" : "no messages"}</span>`}</span></td>
+  <td class="num r sub" data-l="Messages">${c.msgs}</td>
+  <td class="num r sub" data-l="Age">${when(c.last?.created_at ?? c.created_at)}</td>
+  <td class="r" data-l="AI">${c.ai_paused ? pill("bad", "Paused") : pill("good", "Live")}</td>
+</tr>`).join("");
+
+  const paused = withLast.filter((c) => c.ai_paused).length;
+  const inStock = (products ?? []).filter((p) => p.in_stock).length;
 
   res.type("html").send(page(vendor.shop_name, `
 <div class="head">
@@ -194,28 +214,42 @@ admin.get("/vendors/:id", ar(async (req, res) => {
   </div>
 </div>
 
-<h2>Catalog</h2>
-${(products ?? []).length ? `<div class="tablewrap">
-<table><thead><tr><th>Product</th><th>Price</th><th>Options</th><th>Stock</th><th></th></tr></thead>
-<tbody>${productRows}</tbody></table></div>` : empty("Catalog is empty", "The agent can only sell what you list here.")}
-
-<div class="card pad" style="margin-top:8px">
-<form method="post" action="/admin/vendors/${id}/products">
-  <div class="grid c2">
-    <div class="field"><label>Product name</label><input name="name" required placeholder="Ankara two-piece set"></div>
-    <div class="field"><label>Price (GHS)</label><input name="price" type="number" min="0" required placeholder="250"></div>
-    <div class="field"><label>Options</label><input name="options" placeholder="S, M, L"></div>
-    <div class="field"><label>Notes for the agent</label><input name="notes" placeholder="best seller"></div>
-  </div>
-  <button class="btn" type="submit">Add product</button>
-</form>
+<div class="kpis k3">
+  <div class="kpi"><div class="stat-label">Catalog</div><div class="stat">${(products ?? []).length}</div><div class="hint">${inStock} in stock</div></div>
+  <div class="kpi"><div class="stat-label">Conversations</div><div class="stat">${withLast.length}</div><div class="hint">${paused ? `${paused} paused` : "all AI-handled"}</div></div>
+  <div class="kpi"><div class="stat-label">Mode</div><div class="stat">${vendor.is_demo ? "Demo" : "Live"}</div><div class="hint">${vendor.is_demo ? "simulated payments" : "real Paystack payments"}</div></div>
 </div>
 
-<h2>Conversations</h2>
-${convoCards || empty("No conversations yet", "Customer chats will appear here as they come in.")}
+<div class="split">
+<div>
+  <h2>Catalog</h2>
+  ${(products ?? []).length ? `<div class="tablewrap">
+  <table><thead><tr><th>Product</th><th class="r">Price</th><th>Options</th><th>Stock</th><th></th></tr></thead>
+  <tbody>${productRows}</tbody></table></div>` : empty("Catalog is empty", "The agent can only sell what you list here.")}
 
-<h2>Shop details</h2>
-${vendorForm(vendor, `/admin/vendors/${id}/edit`)}`, { active: "dashboard" }));
+  <div class="card pad" style="margin-top:8px">
+  <form method="post" action="/admin/vendors/${id}/products">
+    <div class="grid c2">
+      <div class="field"><label>Product name</label><input name="name" required placeholder="Ankara two-piece set"></div>
+      <div class="field"><label>Price (GHS)</label><input name="price" type="number" min="0" required placeholder="250"></div>
+      <div class="field"><label>Options</label><input name="options" placeholder="S, M, L"></div>
+      <div class="field"><label>Notes for the agent</label><input name="notes" placeholder="best seller"></div>
+    </div>
+    <button class="btn" type="submit">Add product</button>
+  </form>
+  </div>
+
+  <h2>Conversations</h2>
+  ${convoRows ? `<div class="tablewrap">
+  <table><thead><tr><th>Customer</th><th>Last message</th><th class="r">Msgs</th><th class="r">Age</th><th class="r">AI</th></tr></thead>
+  <tbody>${convoRows}</tbody></table></div>` : empty("No conversations yet", "Customer chats appear here as they come in.")}
+</div>
+
+<div class="side">
+  <h2>Shop details</h2>
+  ${vendorForm(vendor, `/admin/vendors/${id}/edit`)}
+</div>
+</div>`, { active: "dashboard" }));
 }));
 
 // ---------- catalog mutations ----------
@@ -296,13 +330,16 @@ admin.get("/orders", ar(async (req, res) => {
 
   const rows = orders.map((o) => `
 <tr>
-  <td class="num muted">${new Date(o.created_at).toLocaleDateString("en-GB", { day: "2-digit", month: "short" })}</td>
-  ${vendorId ? "" : `<td>${esc(o.vendors?.shop_name || "—")}</td>`}
-  <td class="wrap">${esc(o.summary || "—")}</td>
-  <td class="num" style="color:var(--ink)">GHS ${o.amount}</td>
-  <td>${pill(TONE[o.status] ?? "", o.status[0].toUpperCase() + o.status.slice(1))}</td>
-  <td class="muted num">${esc(o.payment_ref || "—")}</td>
+  <td><span class="trunc">${esc(o.summary || "—")}</span></td>
+  <td class="num sub" data-l="Date">${new Date(o.created_at).toLocaleDateString("en-GB", { day: "2-digit", month: "short" })}</td>
+  ${vendorId ? "" : `<td class="sub" data-l="Vendor">${esc(o.vendors?.shop_name || "—")}</td>`}
+  <td class="num r strong" data-l="Amount">GHS ${o.amount}</td>
+  <td data-l="Status">${pill(TONE[o.status] ?? "", o.status[0].toUpperCase() + o.status.slice(1))}</td>
+  <td class="sub num" data-l="Reference" style="font-size:12px">${esc(o.payment_ref || "—")}</td>
 </tr>`).join("");
+
+  const pending = orders.filter((o) => o.status === "pending");
+  const avg = paid.length ? Math.round(revenue / paid.length) : 0;
 
   res.type("html").send(page("Orders", `
 <div class="head">
@@ -313,14 +350,15 @@ admin.get("/orders", ar(async (req, res) => {
   </div>
 </div>
 
-<div class="card pad" style="margin-bottom:8px">
-  <div class="stat-label">Paid revenue</div>
-  <div class="hero">${ghs(revenue)}</div>
-  <div class="muted" style="margin-top:8px">${paid.length} paid of ${orders.length} order${orders.length === 1 ? "" : "s"}</div>
+<div class="kpis">
+  <div class="kpi"><div class="stat-label">Paid revenue</div><div class="hero">${ghs(revenue)}</div><div class="hint">${paid.length} paid order${paid.length === 1 ? "" : "s"}</div></div>
+  <div class="kpi"><div class="stat-label">Average order</div><div class="stat">${paid.length ? ghs(avg) : "—"}</div><div class="hint">per paid sale</div></div>
+  <div class="kpi"><div class="stat-label">Awaiting payment</div><div class="stat${pending.length ? "" : " q"}">${pending.length}</div><div class="hint">${pending.length ? ghs(pending.reduce((s, o) => s + o.amount, 0)) + " outstanding" : "nothing pending"}</div></div>
+  <div class="kpi"><div class="stat-label">Conversion</div><div class="stat">${orders.length ? Math.round((paid.length / orders.length) * 100) + "%" : "—"}</div><div class="hint">of ${orders.length} order${orders.length === 1 ? "" : "s"} created</div></div>
 </div>
 
 ${orders.length ? `<div class="tablewrap"><table>
-<thead><tr><th>Date</th>${vendorId ? "" : "<th>Vendor</th>"}<th>Summary</th><th>Amount</th><th>Status</th><th>Reference</th></tr></thead>
+<thead><tr><th>Summary</th><th>Date</th>${vendorId ? "" : "<th>Vendor</th>"}<th class="r">Amount</th><th>Status</th><th>Reference</th></tr></thead>
 <tbody>${rows}</tbody></table></div>` : empty("No orders yet", "Orders appear the moment the agent closes a sale.")}`,
     { active: "orders" }));
 }));

@@ -6,5 +6,6 @@ COPY server.js ./
 COPY lib ./lib
 COPY routes ./routes
 COPY admin ./admin
+COPY public ./public
 ENV PORT=8080
 CMD ["npm", "start"]

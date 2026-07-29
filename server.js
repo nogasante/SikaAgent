@@ -12,6 +12,7 @@ import { adminAuth, admin } from "./admin/routes.js";
 
 const app = express();
 app.set("trust proxy", 1); // Render sits behind a proxy — needed for req.secure on the session cookie
+app.use(express.static("public", { maxAge: "1y", immutable: true }));
 
 app.get("/", (_req, res) => res.send("Sika Agent is running."));
 

@@ -8,6 +8,12 @@
 import { esc } from "../lib/util.js";
 
 const CSS = `
+/* Self-hosted so no visitor IP is handed to a third-party font CDN, and so the
+   page needs no external request on a cold Render instance. */
+@font-face{
+  font-family:Inter; font-style:normal; font-weight:100 900; font-display:swap;
+  src:url(/fonts/inter.woff2) format("woff2");
+}
 :root{
   --canvas:#08090a; --panel:#0f1011; --surface:#131416; --raised:#1a1b1e;
   --line:rgba(255,255,255,.07); --line-strong:rgba(255,255,255,.11); --wash:rgba(255,255,255,.03);
@@ -48,7 +54,7 @@ a{color:inherit;text-decoration:none}
 .nav a.on .dot{background:var(--gold)}
 .dot{width:5px;height:5px;border-radius:50%;background:var(--ink-4);flex:none;transition:background .15s var(--ease)}
 .sidebar form{margin-top:auto;padding-top:12px;border-top:1px solid var(--line)}
-main{margin-left:var(--sidebar);padding:32px 32px 72px;max-width:1080px}
+main{margin-left:var(--sidebar);padding:28px 32px 72px;max-width:1320px}
 @media(max-width:899px){
   .sidebar{position:sticky;inset:0 0 auto 0;width:auto;flex-direction:row;align-items:center;gap:6px;
     padding:10px 14px;border-right:0;border-bottom:1px solid var(--line);
@@ -80,11 +86,27 @@ a.card:hover{background:var(--raised);border-color:var(--line-strong)}
 .grid{display:grid;gap:8px;grid-template-columns:1fr}
 @media(min-width:620px){.grid.c2{grid-template-columns:1fr 1fr}.grid.c3{grid-template-columns:repeat(3,1fr)}}
 
-/* ---- hero + stat tiles ---- */
+/* ---- KPI strip: one hero figure, the rest secondary ---- */
+.kpis{display:grid;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--r-card);
+  overflow:hidden;grid-template-columns:repeat(2,1fr);margin-bottom:20px}
+@media(min-width:820px){.kpis{grid-template-columns:repeat(4,1fr)}.kpis.k3{grid-template-columns:repeat(3,1fr)}}
+.kpi{background:var(--surface);padding:14px 16px 16px}
+.kpi .stat-label{font-size:11.5px;color:var(--ink-3);letter-spacing:.03em;margin-bottom:8px}
+.kpi .hint{font-size:12px;color:var(--ink-4);margin-top:6px}
 /* Exactly one hero figure per view; proportional figures (no tabular-nums). */
-.hero{font-size:48px;font-weight:590;letter-spacing:-.03em;line-height:1.05;color:var(--gold)}
-.stat{font-size:24px;font-weight:590;letter-spacing:-.022em;line-height:1.2;color:var(--ink)}
+.hero{font-size:38px;font-weight:590;letter-spacing:-.03em;line-height:1;color:var(--gold)}
+.stat{font-size:24px;font-weight:590;letter-spacing:-.022em;line-height:1.15;color:var(--ink)}
+.stat.q{color:var(--ink-3)}
 .stat-label{font-size:12px;color:var(--ink-3);font-weight:400;margin-bottom:6px}
+
+/* ---- two-column working layout ---- */
+.split{display:grid;gap:20px;grid-template-columns:1fr;align-items:start}
+/* Two columns only once the left one can still hold a full table without
+   overflowing — below this the page stacks and tables take the full width. */
+@media(min-width:1400px){.split{grid-template-columns:minmax(0,1.65fr) minmax(320px,1fr)}
+  .split .side{position:sticky;top:24px}
+  .split .side .grid.c2{grid-template-columns:1fr} /* too narrow for pairs */}
+.split h2:first-child{margin-top:0}
 
 /* ---- controls ---- */
 .btn{
@@ -125,7 +147,39 @@ tbody tr:last-child td{border-bottom:0}
 tbody tr{transition:background .15s var(--ease)}
 tbody tr:hover{background:var(--wash)}
 td.num{font-variant-numeric:tabular-nums} /* columns align; standalone figures do not */
+td.r{text-align:right}
+th.r{text-align:right}
 td.wrap{white-space:normal;min-width:220px;color:var(--ink-2)}
+td.strong{color:var(--ink);font-weight:510}
+td.sub{color:var(--ink-3)}
+tr.link{cursor:pointer}
+tr.link td:first-child{position:relative}
+.rowlink{color:inherit;display:block}
+.rowlink:hover{color:var(--gold)}
+/* ch-based cap, deliberately not widened at large viewports: these tables sit in
+   a ~950px column, so a viewport-keyed bump would overflow and clip the last column. */
+.trunc{display:block;max-width:30ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.acts{display:flex;gap:6px;justify-content:flex-end}
+
+/* On phones a wide table is unusable, so each row becomes a stacked card and the
+   column headers move into per-cell labels (td[data-l]). Cells with no data-l
+   (the row's primary identifier) render as the card's heading. */
+@media(max-width:760px){
+  .tablewrap{border:0;border-radius:0;overflow:visible}
+  .tablewrap table,.tablewrap tbody,.tablewrap tr,.tablewrap td{display:block;width:auto}
+  .tablewrap thead{display:none}
+  .tablewrap tr{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-card);
+    padding:12px 14px;margin-bottom:8px}
+  .tablewrap tr:hover{background:var(--surface)}
+  .tablewrap td{border:0;padding:4px 0;white-space:normal;text-align:left}
+  .tablewrap td[data-l]{display:flex;gap:14px;justify-content:space-between;align-items:center}
+  .tablewrap td[data-l]::before{content:attr(data-l);color:var(--ink-3);font-size:12px;flex:none}
+  .tablewrap td:not([data-l]){font-size:15px;font-weight:510;color:var(--ink);margin-bottom:4px}
+  .tablewrap .trunc{max-width:none;white-space:normal;text-align:right}
+  .tablewrap .acts{justify-content:flex-start;margin-top:8px}
+  .hero{font-size:30px}
+  .kpi{padding:12px 14px 14px}
+}
 
 /* ---- status pills: reserved hues, never used as accents ---- */
 .pill{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:var(--r-sm);
@@ -153,8 +207,7 @@ td.wrap{white-space:normal;min-width:220px;color:var(--ink-2)}
 ::-webkit-scrollbar-track{background:transparent}
 `;
 
-const FONT = `<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;510;590&display=swap" rel="stylesheet">`;
+const FONT = `<link rel="preload" href="/fonts/inter.woff2" as="font" type="font/woff2" crossorigin>`;
 
 /** Full admin page shell. `active` highlights the current nav item. */
 export function page(title, body, { active = "" } = {}) {

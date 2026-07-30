@@ -1,7 +1,7 @@
 import express from "express";
 import crypto from "node:crypto";
 import { db, log } from "../lib/db.js";
-import { sendWhatsApp, sendTemplate, templateSid } from "../lib/whatsapp.js";
+import { sendWhatsApp, sendTemplate, templateSid, canSendOutbound } from "../lib/whatsapp.js";
 import { gemini, buildSystem } from "../lib/gemini.js";
 import { paystackLink } from "../lib/paystack.js";
 import { PAYSTACK_SECRET, CRON_SECRET, CONTENT_SID_PAY_NOW, CONTENT_SID_DEMO_PAY } from "../lib/env.js";
@@ -32,11 +32,19 @@ webhooks.post("/webhook/whatsapp", express.urlencoded({ extended: false }), (req
   const payload = { ...req.body };
   const key = `${payload.To ?? ""}|${payload.From ?? ""}`;
 
-  if (payload.Channel === "web") {
+  // Without Twilio credentials every REST send 401s, so answering out of band
+  // would drop the reply entirely. Fall back to replying in the webhook body,
+  // which Twilio delivers for us — slower, but the customer hears back.
+  const inline = payload.Channel === "web" || !canSendOutbound();
+  if (!canSendOutbound()) {
+    console.warn("TWILIO_ACCOUNT_SID/AUTH_TOKEN not set — replying via TwiML; buttons and owner alerts are unavailable");
+  }
+
+  if (inline) {
     const parts = [];
     serialize(key, () => handleInbound(payload, { web: true, collect: (t) => parts.push(t) }))
       .then(() => twiml(res, parts.join("\n\n")))
-      .catch((e) => { console.error("inbound (web) failed", e); twiml(res, "One moment please 🙏"); });
+      .catch((e) => { console.error("inbound (inline) failed", e); twiml(res, "One moment please 🙏"); });
     return;
   }
 
@@ -166,18 +174,22 @@ async function handleInbound(payload, opts) {
           ? { 1: String(order.amount), 2: order.summary || "your order" }
           : { 1: String(order.amount), 2: order.summary || "your order", 3: link };
 
-        // The model re-emits ACTION_ORDER while the customer confirms, so check
-        // whether this order was already presented before asking again — two
-        // identical pay prompts in a row look broken.
+        // The model re-emits ACTION_ORDER while the customer confirms, so don't
+        // present the same order twice in a row. Time-boxed on purpose: a
+        // customer who comes back later asking for the link should get it again,
+        // not be told it can't be found.
         const { count: prompted } = await db.from("agent_logs")
           .select("id", { count: "exact", head: true })
           .eq("conversation_id", convo.id)
           .in("action", ["sent_pay_buttons", "sent_pay_text"])
-          .eq("detail->>payment_ref", order.payment_ref);
+          .eq("detail->>payment_ref", order.payment_ref)
+          .gte("created_at", new Date(Date.now() - 3 * 60 * 1000).toISOString());
 
         if (prompted) {
+          // Just sent it, so don't repeat the whole prompt — but always point at
+          // it, since this branch also catches "where is my payment link?".
           await log(vendor.id, convo.id, "pay_prompt_skipped", { payment_ref: order.payment_ref });
-          reply = reply || `That's GHS ${order.amount} — the payment link is just above 🙏`;
+          reply = `${reply ? reply + "\n\n" : ""}The payment link for GHS ${order.amount} is just above ☝️`;
         } else if (isWeb || !contentSid) {
           // Cockpit (or no template available): the link goes inline as text.
           reply += `\n\nPay GHS ${order.amount} securely here (MoMo or card):\n${link}`;

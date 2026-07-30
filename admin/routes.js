@@ -300,10 +300,14 @@ admin.post("/vendors/:vid/products/:pid/delete", ar(async (req, res) => {
 // ---------- conversation thread ----------
 admin.get("/vendors/:vid/conversations/:cid", ar(async (req, res) => {
   const { vid, cid } = req.params;
-  const [{ data: vendor }, { data: convo }, { data: messages }] = await Promise.all([
+  const [{ data: vendor }, { data: convo }, { data: messages }, { count: undelivered }] = await Promise.all([
     db.from("vendors").select("shop_name").eq("id", vid).single(),
     db.from("conversations").select("*").eq("id", cid).single(),
     db.from("messages").select("*").eq("conversation_id", cid).order("created_at", { ascending: true }),
+    // Replies Twilio refused. Without this the thread reads as if the customer
+    // was answered when nothing actually reached their phone.
+    db.from("agent_logs").select("id", { count: "exact", head: true })
+      .eq("conversation_id", cid).eq("action", "send_failed"),
   ]);
   if (!convo) return res.status(404).type("html").send(page("Not found", `<h1>Conversation not found</h1>`));
 
@@ -325,6 +329,7 @@ admin.get("/vendors/:vid/conversations/:cid", ar(async (req, res) => {
   </div>
 </div>
 ${convo.ai_paused ? `<div class="banner bad" style="margin-bottom:12px">AI is paused — this thread is yours until you resume it.</div>` : ""}
+${undelivered ? `<div class="banner bad" style="margin-bottom:12px">${undelivered} repl${undelivered === 1 ? "y" : "ies"} below never reached the customer — Twilio rejected the send. Check the Twilio console for the reason (a trial account caps at 50 messages a day).</div>` : ""}
 ${bubbles ? `<div class="card pad"><div class="thread">${bubbles}</div></div>` : empty("No messages yet")}`,
     { active: "dashboard" }));
 }));

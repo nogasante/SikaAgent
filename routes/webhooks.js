@@ -66,10 +66,14 @@ async function handleInbound(payload, opts) {
 
   // Deliver a line to the customer: buffered for the cockpit, sent over REST on
   // WhatsApp (where the webhook response has already gone out).
+  let convoId = null;
   const say = async (text) => {
     if (!text) return;
     if (isWeb) return void opts.collect(text);
-    await sendWhatsApp(vendor?.twilio_number ?? to, from, text);
+    const ok = await sendWhatsApp(vendor?.twilio_number ?? to, from, text);
+    // A rejected send is invisible to the customer AND to us unless we record
+    // it — that is how a spent Twilio quota looked exactly like a broken agent.
+    if (!ok && vendor) await log(vendor.id, convoId, "send_failed", { to: from, chars: text.length });
   };
 
   try {
@@ -86,6 +90,7 @@ async function handleInbound(payload, opts) {
               { onConflict: "vendor_id,customer_number" })
       .select().single();
     if (!convo) return;
+    convoId = convo.id;
     await db.from("messages").insert({ conversation_id: convo.id, role: "customer", content: body });
     await log(vendor.id, convo.id, "received", { from, body });
 

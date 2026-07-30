@@ -53,7 +53,12 @@ a{color:inherit;text-decoration:none}
 .nav a.on{color:var(--ink);background:var(--wash)}
 .nav a.on .dot{background:var(--gold)}
 .dot{width:5px;height:5px;border-radius:50%;background:var(--ink-4);flex:none;transition:background .15s var(--ease)}
-.sidebar form{margin-top:auto;padding-top:12px;border-top:1px solid var(--line)}
+.foot{margin-top:auto;padding-top:12px;border-top:1px solid var(--line);display:flex;align-items:center;gap:7px}
+.foot form{margin-left:auto}
+.livedot{width:6px;height:6px;border-radius:50%;background:var(--ink-4);flex:none;transition:background .3s}
+.livedot[data-on="1"]{background:var(--good);animation:pulse 2.4s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+@media(prefers-reduced-motion:reduce){.livedot[data-on="1"]{animation:none}}
 main{margin-left:var(--sidebar);padding:28px 32px 72px;max-width:1320px}
 @media(max-width:899px){
   .sidebar{position:sticky;inset:0 0 auto 0;width:auto;flex-direction:row;align-items:center;gap:6px;
@@ -61,7 +66,8 @@ main{margin-left:var(--sidebar);padding:28px 32px 72px;max-width:1320px}
     background:rgba(15,16,17,.9);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
   .brand{padding:0 10px 0 0;font-size:14px}
   .nav{flex-direction:row;flex:1;gap:2px}
-  .sidebar form{margin:0;padding:0;border:0}
+  .foot{margin:0;padding:0;border:0;gap:6px}
+  .foot .muted{display:none} /* the dot alone is enough on a phone */
   main{margin-left:0;padding:20px 16px 56px}
 }
 
@@ -209,6 +215,37 @@ tr.link td:first-child{position:relative}
 
 const FONT = `<link rel="preload" href="/fonts/inter.woff2" as="font" type="font/woff2" crossorigin>`;
 
+// Polls /admin/pulse and reloads when the data behind the page has moved.
+// Deliberately conservative: never reloads while a field is focused or a form
+// has been typed into, so a refresh can't wipe half-entered work.
+const LIVE = `<script>
+(() => {
+  const dot = document.getElementById('live');
+  let last = null, stop = false;
+  const typing = () => {
+    const a = document.activeElement;
+    if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return true;
+    return [...document.querySelectorAll('input,textarea')].some(
+      (el) => el.type !== 'hidden' && el.value !== el.defaultValue);
+  };
+  async function tick() {
+    if (stop) return;
+    try {
+      const r = await fetch('/admin/pulse', { cache: 'no-store' });
+      if (r.status === 302 || r.redirected) { stop = true; return; } // session gone
+      if (!r.ok) return;
+      const { v } = await r.json();
+      if (dot) dot.dataset.on = '1';
+      if (last === null) { last = v; return; }
+      if (v !== last && !typing()) location.reload();
+    } catch { /* offline — try again next tick */ }
+  }
+  setInterval(tick, 8000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
+  tick();
+})();
+</script>`;
+
 /** Full admin page shell. `active` highlights the current nav item. */
 export function page(title, body, { active = "" } = {}) {
   const item = (href, key, label) =>
@@ -220,9 +257,11 @@ export function page(title, body, { active = "" } = {}) {
 <aside class="sidebar">
 <div class="brand">💰 Sika <span>Agent</span></div>
 <nav class="nav">${item("/admin", "dashboard", "Vendors")}${item("/admin/orders", "orders", "Orders")}</nav>
-<form method="post" action="/admin/logout"><button class="btn ghost sm" type="submit">Log out</button></form>
+<div class="foot"><span class="livedot" id="live"></span><span class="muted" style="font-size:12px">Live</span>
+<form method="post" action="/admin/logout"><button class="btn ghost sm" type="submit">Log out</button></form></div>
 </aside>
 <main>${body}</main>
+${LIVE}
 </body></html>`;
 }
 

@@ -27,6 +27,30 @@ adminAuth.post("/admin/logout", (_req, res) => {
 
 admin.use(requireAuth);
 
+// ---------- live updates ----------
+// The panel is server-rendered, so pages would otherwise stay frozen until a
+// manual reload. Clients poll this for a cheap change signature and refresh only
+// when something actually moved. Polling rather than Supabase Realtime keeps the
+// service-role key server-side and needs no client library.
+admin.get("/pulse", ar(async (_req, res) => {
+  const newest = (table) =>
+    db.from(table).select("created_at").order("created_at", { ascending: false }).limit(1).maybeSingle();
+
+  const [msg, ord, esc, paid, open] = await Promise.all([
+    newest("messages"), newest("orders"), newest("escalations"),
+    // Status flips (pending -> paid) don't touch created_at, so count them too.
+    db.from("orders").select("id", { count: "exact", head: true }).eq("status", "paid"),
+    db.from("escalations").select("id", { count: "exact", head: true }).eq("resolved", false),
+  ]);
+
+  res.set("Cache-Control", "no-store").json({
+    v: [
+      msg.data?.created_at ?? "", ord.data?.created_at ?? "", esc.data?.created_at ?? "",
+      paid.count ?? 0, open.count ?? 0,
+    ].join("|"),
+  });
+}));
+
 // ---------- dashboard ----------
 admin.get("/", ar(async (_req, res) => {
   const { data: vendors } = await db.from("vendors").select("*").order("created_at", { ascending: false });

@@ -1,13 +1,24 @@
 import express from "express";
 import { db } from "../lib/db.js";
+import { esc } from "../lib/util.js";
 
 export const testCockpit = express.Router();
 
 // Browser test cockpit — lets judges chat with the demo shop without Twilio.
 testCockpit.get("/test", async (_req, res) => {
-  const { data: v } = await db.from("vendors").select("shop_name, twilio_number")
+  const { data: v } = await db.from("vendors").select("id, shop_name, twilio_number")
     .eq("is_demo", true).limit(1).single();
   if (!v) return res.send("No demo vendor yet — run the seed SQL in DEPLOY.md first.");
+
+  // Build the hint from this shop's own catalog: hardcoding product names would
+  // be wrong for every vendor but the one they were copied from.
+  const { data: items } = await db.from("products").select("name, price, options")
+    .eq("vendor_id", v.id).eq("in_stock", true).order("price", { ascending: false }).limit(1);
+  const top = items?.[0];
+  const firstOption = top?.options ? String(top.options).split(",")[0].trim() : "";
+  const hint = top
+    ? `Try: "Is the ${top.name} available?" · then${firstOption ? ` "${firstOption}" and` : ""} a delivery town to place an order · or ask for it cheaper to see the agent hand you to the owner`
+    : `This shop's catalog is empty — add products in /admin first.`;
   res.type("html").send(`<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Sika Agent — Test</title><style>
@@ -27,7 +38,7 @@ button.send{background:#FFC33D;border:none;border-radius:99px;padding:0 20px;fon
 </style></head><body>
 <header><div><b>${v.shop_name}</b><small>Sika Agent test mode — you are the customer</small></div>
 <button onclick="fresh()">New customer</button></header>
-<div id="chat"><div class="m sys">Try: "Is the Ankara two-piece available?" · confirm a size &amp; delivery · ask "can you do GHS 150?" to see escalation</div></div>
+<div id="chat"><div class="m sys">${esc(hint)}</div></div>
 <form onsubmit="return send(event)"><input id="box" placeholder="Message the shop…" autocomplete="off"><button class="send">Send</button></form>
 <script>
 const chat=document.getElementById('chat'),box=document.getElementById('box');

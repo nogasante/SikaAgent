@@ -117,14 +117,14 @@ function vendorForm(v = {}, action = "/admin/vendors") {
     <div class="field"><label>Owner name</label><input name="owner_name" required value="${val("owner_name")}"></div>
     <div class="field"><label>Owner WhatsApp</label><input name="owner_phone" required placeholder="+233XXXXXXXXX" value="${phone(v.owner_phone)}"></div>
     <div class="field"><label>Business line (Twilio)</label><input name="twilio_number" required placeholder="+1415XXXXXXX" value="${phone(v.twilio_number)}"></div>
-    <div class="field"><label>City</label><input name="city" placeholder="Accra" value="${val("city")}"></div>
+    <div class="field"><label>City</label><input name="city" placeholder="e.g. Accra" value="${val("city")}"></div>
     <div class="field"><label>Mode</label><select name="is_demo">
       <option value="">Live — real Paystack payments</option>
       <option value="1" ${v.is_demo ? "selected" : ""}>Demo — simulated payments</option>
     </select></div>
   </div>
   <div class="field"><label>Delivery note — the agent quotes this verbatim</label>
-    <textarea name="delivery_note" rows="2" placeholder="Accra GHS 20, Madina GHS 25, next-day delivery">${val("delivery_note")}</textarea></div>
+    <textarea name="delivery_note" rows="2" placeholder="e.g. in-town GHS 20, nearby suburb GHS 25, next-day delivery">${val("delivery_note")}</textarea></div>
   <div class="field"><label>Tone note — how the agent should sound</label>
     <textarea name="tone_note" rows="2" placeholder="warm, uses emojis, light pidgin ok">${val("tone_note")}</textarea></div>
   ${v.id ? `<div class="field"><label>Status</label><select name="active">
@@ -254,9 +254,9 @@ admin.get("/vendors/:id", ar(async (req, res) => {
   <div class="card pad" style="margin-top:8px">
   <form method="post" action="/admin/vendors/${id}/products">
     <div class="grid c2">
-      <div class="field"><label>Product name</label><input name="name" required placeholder="Ankara two-piece set"></div>
-      <div class="field"><label>Price (GHS)</label><input name="price" type="number" min="0" required placeholder="250"></div>
-      <div class="field"><label>Options</label><input name="options" placeholder="S, M, L"></div>
+      <div class="field"><label>Product name</label><input name="name" required placeholder="what you are selling"></div>
+      <div class="field"><label>Price (GHS)</label><input name="price" type="number" min="0" required placeholder="0"></div>
+      <div class="field"><label>Options</label><input name="options" placeholder="sizes, flavours, shades…"></div>
       <div class="field"><label>Notes for the agent</label><input name="notes" placeholder="best seller"></div>
     </div>
     <button class="btn" type="submit">Add product</button>

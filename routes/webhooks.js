@@ -10,36 +10,79 @@ import { twiml, safeJson } from "../lib/util.js";
 export const webhooks = express.Router();
 
 // ---------- WhatsApp webhook ----------
-webhooks.post("/webhook/whatsapp", express.urlencoded({ extended: false }), async (req, res) => {
-  try {
-    const from = req.body.From ?? "";
-    const to = req.body.To ?? "";
-    const body = (req.body.Body ?? "").trim();
-    // Set by a tapped quick-reply button; more reliable than matching the label.
-    const buttonId = req.body.ButtonPayload ?? "";
-    // The browser cockpit at /test reads our TwiML and cannot render buttons,
-    // so it asks for the plain-text path instead.
-    const isWeb = req.body.Channel === "web";
-    if (!from || !body) return twiml(res, "");
+// Twilio abandons a webhook after roughly 15s (error 11200) and a thinking model
+// can spend longer than that on its own, before the Twilio calls a button needs.
+// So WhatsApp traffic is acknowledged immediately and answered over the REST API
+// once there's something to say. The /test cockpit still runs inline, because the
+// browser is waiting on the reply and is happy to.
+// One chain per (line, customer) so a customer sending three messages in a row
+// is answered in order. Without it, concurrent runs read the same history and can
+// duplicate an order or an escalation.
+const chains = new Map();
 
-    const { data: vendor } = await db.from("vendors").select("*").eq("twilio_number", to).eq("active", true).single();
-    if (!vendor) return twiml(res, "This line is not active yet.");
+function serialize(key, fn) {
+  const run = (chains.get(key) ?? Promise.resolve()).then(fn, fn);
+  const settled = run.catch(() => {});
+  chains.set(key, settled);
+  settled.then(() => { if (chains.get(key) === settled) chains.delete(key); });
+  return run;
+}
+
+webhooks.post("/webhook/whatsapp", express.urlencoded({ extended: false }), (req, res) => {
+  const payload = { ...req.body };
+  const key = `${payload.To ?? ""}|${payload.From ?? ""}`;
+
+  if (payload.Channel === "web") {
+    const parts = [];
+    serialize(key, () => handleInbound(payload, { web: true, collect: (t) => parts.push(t) }))
+      .then(() => twiml(res, parts.join("\n\n")))
+      .catch((e) => { console.error("inbound (web) failed", e); twiml(res, "One moment please 🙏"); });
+    return;
+  }
+
+  twiml(res, ""); // ack first: never let Twilio time out on us
+  serialize(key, () => handleInbound(payload, { web: false }))
+    .catch((e) => console.error("inbound failed", e));
+});
+
+async function handleInbound(payload, opts) {
+  const from = payload.From ?? "";
+  const to = payload.To ?? "";
+  const body = (payload.Body ?? "").trim();
+  // Set by a tapped quick-reply button; more reliable than matching the label.
+  const buttonId = payload.ButtonPayload ?? "";
+  const isWeb = !!opts.web;
+  if (!from || !body) return;
+
+  const { data: vendor } = await db.from("vendors").select("*").eq("twilio_number", to).eq("active", true).single();
+
+  // Deliver a line to the customer: buffered for the cockpit, sent over REST on
+  // WhatsApp (where the webhook response has already gone out).
+  const say = async (text) => {
+    if (!text) return;
+    if (isWeb) return void opts.collect(text);
+    await sendWhatsApp(vendor?.twilio_number ?? to, from, text);
+  };
+
+  try {
+    if (!vendor) return await say("This line is not active yet.");
 
     // Vendor console: owner messaging their own business line
-    if (from === vendor.owner_phone) return vendorConsole(res, vendor, body);
+    if (from === vendor.owner_phone) return await vendorConsole(say, vendor, body);
 
-    // Customer flow
-    let { data: convo } = await db.from("conversations").select("*")
-      .eq("vendor_id", vendor.id).eq("customer_number", from).single();
-    if (!convo) {
-      ({ data: convo } = await db.from("conversations")
-        .insert({ vendor_id: vendor.id, customer_number: from }).select().single());
-    }
+    // Upsert rather than select-then-insert: a customer firing off several
+    // messages at once would otherwise have every request but the first lose the
+    // race against the (vendor_id, customer_number) unique constraint.
+    const { data: convo } = await db.from("conversations")
+      .upsert({ vendor_id: vendor.id, customer_number: from },
+              { onConflict: "vendor_id,customer_number" })
+      .select().single();
+    if (!convo) return;
     await db.from("messages").insert({ conversation_id: convo.id, role: "customer", content: body });
     await log(vendor.id, convo.id, "received", { from, body });
 
     // Kill switch: vendor took over this thread — AI stays silent
-    if (convo.ai_paused) return twiml(res, "");
+    if (convo.ai_paused) return; // thread is the owner's — stay silent
 
     // Demo payment simulation — typed "PAID", or the Pay button tapped.
     if (vendor.is_demo && (/^paid$/i.test(body) || buttonId === "pay_now" || /^pay ghs/i.test(body))) {
@@ -49,7 +92,7 @@ webhooks.post("/webhook/whatsapp", express.urlencoded({ extended: false }), asyn
       if (order) {
         await db.from("orders").update({ status: "paid", paid_at: new Date().toISOString() }).eq("id", order.id);
         await log(vendor.id, convo.id, "payment_confirmed", { ref: order.payment_ref, amount: order.amount, demo: true });
-        return twiml(res, `Payment received 🎉 GHS ${order.amount} — order confirmed!\n(${vendor.shop_name} demo)`);
+        return await say(`Payment received 🎉 GHS ${order.amount} — order confirmed!\n(${vendor.shop_name} demo)`);
       }
     }
 
@@ -75,10 +118,11 @@ webhooks.post("/webhook/whatsapp", express.urlencoded({ extended: false }), asyn
       const holding = "One moment please 🙏";
       await db.from("messages").insert({ conversation_id: convo.id, role: "agent", content: holding });
       await log(vendor.id, convo.id, "model_unavailable", { from });
-      return twiml(res, holding);
+      return await say(holding);
     }
 
     let reply = raw;
+    let payNow = null; // deferred so the button lands after the prose
 
     // Tolerant matchers: allow whitespace/fences and grab the JSON object.
     const escalate = raw.match(/ACTION_ESCALATE\s*(\{[\s\S]*?\})/);
@@ -134,25 +178,23 @@ webhooks.post("/webhook/whatsapp", express.urlencoded({ extended: false }), asyn
         if (prompted) {
           await log(vendor.id, convo.id, "pay_prompt_skipped", { payment_ref: order.payment_ref });
           reply = reply || `That's GHS ${order.amount} — the payment link is just above 🙏`;
+        } else if (isWeb || !contentSid) {
+          // Cockpit (or no template available): the link goes inline as text.
+          reply += `\n\nPay GHS ${order.amount} securely here (MoMo or card):\n${link}`;
+          await log(vendor.id, convo.id, "sent_pay_text", { payment_ref: order.payment_ref });
         } else {
-          // Try the buttons first: only if they actually went out do we skip the
-          // plain-text link. Sending prose before knowing would duplicate it when
-          // the template fails.
-          const sent = !isWeb && contentSid
-            ? await sendTemplate(vendor.twilio_number, from, contentSid, vars)
-            : false;
-          await log(vendor.id, convo.id, sent ? "sent_pay_buttons" : "sent_pay_text", { payment_ref: order.payment_ref });
-
-          if (sent) {
-            // The template is self-contained (summary, total, Pay button), so
-            // the model's line follows it as ordinary text via the TwiML reply.
-            await db.from("messages").insert({
-              conversation_id: convo.id, role: "agent",
-              content: `[Pay GHS ${order.amount} button] ${order.summary || ""}`.trim(),
-            });
-          } else {
-            reply += `\n\nPay GHS ${order.amount} securely here (MoMo or card):\n${link}`;
-          }
+          // Buttons need their own REST message, sent after the prose. If the
+          // template is rejected, fall back to the link so the customer can
+          // still pay.
+          payNow = async () => {
+            const sent = await sendTemplate(vendor.twilio_number, from, contentSid, vars);
+            await log(vendor.id, convo.id, sent ? "sent_pay_buttons" : "sent_pay_text", { payment_ref: order.payment_ref });
+            const record = sent
+              ? `[Pay GHS ${order.amount} button] ${order.summary || ""}`.trim()
+              : `Pay GHS ${order.amount} securely here (MoMo or card):\n${link}`;
+            if (!sent) await say(record);
+            await db.from("messages").insert({ conversation_id: convo.id, role: "agent", content: record });
+          };
         }
       }
     } else if (escalate) {
@@ -191,27 +233,33 @@ webhooks.post("/webhook/whatsapp", express.urlencoded({ extended: false }), asyn
 
     await db.from("messages").insert({ conversation_id: convo.id, role: "agent", content: reply });
     await log(vendor.id, convo.id, "replied", { chars: reply.length });
-    return twiml(res, reply);
+    await say(reply);
+
+    // The tappable prompt follows the prose so the conversation reads in order.
+    if (payNow) await payNow();
   } catch (e) {
     console.error(e);
-    return twiml(res, "One moment please 🙏");
+    await say("One moment please 🙏").catch(() => {});
   }
-});
+}
 
 // Last line of defence against model scratchpad reaching a customer. The prompt
-// forbids it and thinkingBudget is 0, but a leak here is seen by a real buyer.
+// forbids it, but this endpoint rejects thinkingConfig so it can happen, and a
+// leak here is read by a real buyer.
 function stripScaffolding(text) {
   let t = text;
   // Drop leading meta lines: "Drafting Response:", "**Analysis**", "Plan:" etc.
   t = t.replace(/^\s*(?:[*_#>\s-]*)(?:drafting|draft|response|reply|thinking|thought|analysis|plan|reasoning|answer)\b[^\n:]*:\s*/i, "");
-  // A leaked draft is often wrapped in quotes and bullets — unwrap a single one.
-  t = t.replace(/^\s*[*\-•]\s*/, "");
+  // A leaked draft is often wrapped in quotes or a bullet — unwrap a single one.
+  // The trailing space matters: "* item" is a bullet, but "*item*" is WhatsApp
+  // bold, and stripping that asterisk would break the formatting.
+  t = t.replace(/^\s*[*\-•][ \t]+/, "");
   t = t.replace(/^\s*["“](.+)["”]\s*$/s, "$1");
   return t.trim();
 }
 
 // ---------- Vendor console (owner texts their own line) ----------
-async function vendorConsole(res, vendor, body) {
+async function vendorConsole(say, vendor, body) {
   const pause = body.match(/^(pause|resume)\s+(\+?\d{9,15})$/i);
   if (pause) {
     const paused = pause[1].toLowerCase() === "pause";
@@ -226,12 +274,12 @@ async function vendorConsole(res, vendor, body) {
         .eq("conversation_id", convo.id).eq("resolved", false);
     }
     await log(vendor.id, convo?.id ?? null, paused ? "paused" : "resumed", { customer: cust });
-    return twiml(res, paused
+    return await say(paused
       ? `AI paused for ${pause[2]} — the thread is yours. Send "RESUME ${pause[2]}" when done.`
       : `AI resumed for ${pause[2]} ✅`);
   }
-  if (/^report$/i.test(body)) return twiml(res, await buildReport(vendor));
-  return twiml(res,
+  if (/^report$/i.test(body)) return await say(await buildReport(vendor));
+  return await say(
     `${vendor.shop_name} console:\n• PAUSE <customer number> — take over a chat\n• RESUME <customer number>\n• REPORT — today's numbers`);
 }
 

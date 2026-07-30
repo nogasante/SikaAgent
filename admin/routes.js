@@ -309,9 +309,14 @@ admin.post("/vendors/:vid/conversations/:cid/pause", ar(async (req, res) => {
   const { cid, vid } = req.params;
   const { data: c } = await db.from("conversations").select("ai_paused").eq("id", cid).single();
   if (c) {
-    await db.from("conversations").update({ ai_paused: !c.ai_paused }).eq("id", cid);
-    // Resuming means the operator handled whatever was escalated.
-    if (c.ai_paused) {
+    const resuming = c.ai_paused;
+    // Resuming means the operator handled whatever was escalated, so clear it
+    // and start the AI's history window here — otherwise the exchange the
+    // operator just settled keeps steering the agent's replies.
+    await db.from("conversations")
+      .update(resuming ? { ai_paused: false, ai_resumed_at: new Date().toISOString() } : { ai_paused: true })
+      .eq("id", cid);
+    if (resuming) {
       await db.from("escalations").update({ resolved: true }).eq("conversation_id", cid).eq("resolved", false);
     }
   }

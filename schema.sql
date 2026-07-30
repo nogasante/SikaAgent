@@ -31,6 +31,7 @@ create table conversations (
   vendor_id uuid references vendors(id) on delete cascade,
   customer_number text not null,
   ai_paused boolean default false,  -- kill switch: vendor took over this thread
+  ai_resumed_at timestamptz,        -- owner handed the thread back; AI reads history from here
   created_at timestamptz default now(),
   unique (vendor_id, customer_number)
 );

@@ -53,10 +53,15 @@ webhooks.post("/webhook/whatsapp", express.urlencoded({ extended: false }), asyn
       }
     }
 
+    // Only read history since the owner last handed the thread back. Without
+    // this, a resolved dispute keeps steering every later reply: the model sees
+    // its own past escalation lines and escalates again, even for "hi".
+    let historyQuery = db.from("messages").select("role, content").eq("conversation_id", convo.id);
+    if (convo.ai_resumed_at) historyQuery = historyQuery.gte("created_at", convo.ai_resumed_at);
+
     const [{ data: products }, { data: history }, { data: pastOrders }] = await Promise.all([
       db.from("products").select("*").eq("vendor_id", vendor.id),
-      db.from("messages").select("role, content").eq("conversation_id", convo.id)
-        .order("created_at", { ascending: true }).limit(24),
+      historyQuery.order("created_at", { ascending: true }).limit(24),
       db.from("orders").select("summary, amount, status, paid_at, payment_ref")
         .eq("conversation_id", convo.id).order("created_at", { ascending: false }).limit(5),
     ]);
@@ -194,15 +199,16 @@ async function vendorConsole(res, vendor, body) {
   if (pause) {
     const paused = pause[1].toLowerCase() === "pause";
     const cust = "whatsapp:" + (pause[2].startsWith("+") ? pause[2] : "+" + pause[2]);
+    // Handing the thread back means the owner dealt with it: clear the
+    // escalations and move the AI's history window past the resolved exchange.
     const { data: convo } = await db.from("conversations")
-      .update({ ai_paused: paused })
+      .update(paused ? { ai_paused: true } : { ai_paused: false, ai_resumed_at: new Date().toISOString() })
       .eq("vendor_id", vendor.id).eq("customer_number", cust).select("id").maybeSingle();
-    // Handing the thread back means the owner dealt with it.
     if (!paused && convo) {
       await db.from("escalations").update({ resolved: true })
         .eq("conversation_id", convo.id).eq("resolved", false);
     }
-    await log(vendor.id, null, paused ? "paused" : "resumed", { customer: cust });
+    await log(vendor.id, convo?.id ?? null, paused ? "paused" : "resumed", { customer: cust });
     return twiml(res, paused
       ? `AI paused for ${pause[2]} — the thread is yours. Send "RESUME ${pause[2]}" when done.`
       : `AI resumed for ${pause[2]} ✅`);

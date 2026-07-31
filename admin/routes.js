@@ -352,6 +352,57 @@ admin.post("/vendors/:vid/conversations/:cid/pause", ar(async (req, res) => {
   res.redirect(`/admin/vendors/${vid}/conversations/${cid}`);
 }));
 
+// ---------- escalations ----------
+admin.get("/escalations", ar(async (req, res) => {
+  const showAll = req.query.all === "1";
+  let q = db.from("escalations")
+    .select("*, vendors(shop_name), conversations(id, customer_number, ai_paused)")
+    .order("created_at", { ascending: false }).limit(200);
+  if (!showAll) q = q.eq("resolved", false);
+  const { data } = await q;
+  const list = data ?? [];
+
+  const rows = list.map((e) => `
+<tr>
+  <td class="strong">${esc(e.reason || "needs owner")}</td>
+  <td class="sub" data-l="Customer">${e.conversations
+    ? `<a class="rowlink" href="/admin/vendors/${e.vendor_id}/conversations/${e.conversations.id}">${phone(e.conversations.customer_number)}</a>`
+    : "—"}</td>
+  <td class="sub" data-l="Shop">${esc(e.vendors?.shop_name || "—")}</td>
+  <td class="num sub" data-l="Raised">${new Date(e.created_at).toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</td>
+  <td data-l="AI">${e.conversations?.ai_paused ? pill("bad", "Paused") : pill("good", "Answering")}</td>
+  <td class="r" data-l="">${e.resolved
+    ? pill("good", "Resolved")
+    : `<form class="inline" method="post" action="/admin/escalations/${e.id}/resolve"><button class="btn ghost sm" type="submit">Mark resolved</button></form>`}</td>
+</tr>`).join("");
+
+  res.type("html").send(page("Escalations", `
+<div class="head">
+  <div><h1>Escalations</h1><p class="sub">${showAll ? "every escalation ever raised" : "waiting on a human"}</p></div>
+  <div class="actions">
+    <a class="btn ghost" href="/admin/escalations${showAll ? "" : "?all=1"}">${showAll ? "Open only" : "Show resolved too"}</a>
+    ${list.some((e) => !e.resolved)
+      ? `<form class="inline" method="post" action="/admin/escalations/resolve-all" onsubmit="return confirm('Mark every open escalation as resolved?')"><button class="btn ghost" type="submit">Resolve all</button></form>`
+      : ""}
+  </div>
+</div>
+${list.length ? `<div class="tablewrap"><table>
+<thead><tr><th>Reason</th><th>Customer</th><th>Shop</th><th>Raised</th><th>AI</th><th></th></tr></thead>
+<tbody>${rows}</tbody></table></div>`
+  : empty("Nothing waiting", "The agent escalates when it needs a human — none open right now.")}`,
+    { active: "escalations" }));
+}));
+
+admin.post("/escalations/:id/resolve", ar(async (req, res) => {
+  await db.from("escalations").update({ resolved: true }).eq("id", req.params.id);
+  res.redirect("/admin/escalations");
+}));
+
+admin.post("/escalations/resolve-all", ar(async (_req, res) => {
+  await db.from("escalations").update({ resolved: true }).eq("resolved", false);
+  res.redirect("/admin/escalations");
+}));
+
 // ---------- orders ----------
 async function fetchOrders(vendorId) {
   let q = db.from("orders").select("*, vendors(shop_name)").order("created_at", { ascending: false });
@@ -362,6 +413,34 @@ async function fetchOrders(vendorId) {
 
 const TONE = { paid: "good", cancelled: "bad", pending: "" };
 
+// Payment status belongs to the Paystack webhook — "paid" is never set by hand.
+// The operator only owns cancelling and reopening.
+const OPERATOR_STATUSES = new Set(["cancelled", "pending"]);
+
+const backTo = (req) => {
+  const v = String(req.body.back || "");
+  return `/admin/orders${v ? `?vendor_id=${encodeURIComponent(v)}` : ""}`;
+};
+
+admin.post("/orders/:id/status", form, ar(async (req, res) => {
+  const next = String(req.body.status || "");
+  if (OPERATOR_STATUSES.has(next)) {
+    await db.from("orders").update({ status: next }).eq("id", req.params.id);
+  }
+  res.redirect(backTo(req));
+}));
+
+// Fulfilment, tracked apart from payment so revenue totals stay intact.
+admin.post("/orders/:id/delivered", form, ar(async (req, res) => {
+  const { data: o } = await db.from("orders").select("delivered_at").eq("id", req.params.id).maybeSingle();
+  if (o) {
+    await db.from("orders")
+      .update({ delivered_at: o.delivered_at ? null : new Date().toISOString() })
+      .eq("id", req.params.id);
+  }
+  res.redirect(backTo(req));
+}));
+
 admin.get("/orders", ar(async (req, res) => {
   const vendorId = req.query.vendor_id || "";
   const orders = await fetchOrders(vendorId);
@@ -369,14 +448,26 @@ admin.get("/orders", ar(async (req, res) => {
   const revenue = paid.reduce((s, o) => s + o.amount, 0);
   const scope = vendorId ? (orders[0]?.vendors?.shop_name ?? "this vendor") : "all vendors";
 
+  // Payment status is owned by the Paystack webhook, so the only transitions
+  // offered here are the ones a human genuinely decides.
+  const post = (id, path, fields, label, cls = "ghost") =>
+    `<form class="inline" method="post" action="/admin/orders/${id}/${path}">${fields}<input type="hidden" name="back" value="${esc(vendorId)}"><button class="btn ${cls} sm" type="submit">${label}</button></form>`;
+  const setStatus = (id, to, label, cls) => post(id, "status", `<input type="hidden" name="status" value="${to}">`, label, cls);
+
   const rows = orders.map((o) => `
 <tr>
   <td><span class="trunc">${esc(o.summary || "—")}</span></td>
   <td class="num sub" data-l="Date">${new Date(o.created_at).toLocaleDateString("en-GB", { day: "2-digit", month: "short" })}</td>
   ${vendorId ? "" : `<td class="sub" data-l="Vendor">${esc(o.vendors?.shop_name || "—")}</td>`}
   <td class="num r strong" data-l="Amount">GHS ${o.amount}</td>
-  <td data-l="Status">${pill(TONE[o.status] ?? "", o.status[0].toUpperCase() + o.status.slice(1))}</td>
+  <td data-l="Status">${pill(TONE[o.status] ?? "", o.status[0].toUpperCase() + o.status.slice(1))}${
+      o.delivered_at ? ` ${pill("good", "Delivered")}` : ""}</td>
   <td class="sub num" data-l="Reference" style="font-size:12px">${esc(o.payment_ref || "—")}</td>
+  <td class="r" data-l=""><div class="acts">
+    ${o.status === "paid" ? post(o.id, "delivered", "", o.delivered_at ? "Undo delivered" : "Mark delivered") : ""}
+    ${o.status === "pending" ? setStatus(o.id, "cancelled", "Cancel", "danger") : ""}
+    ${o.status === "cancelled" ? setStatus(o.id, "pending", "Reopen") : ""}
+  </div></td>
 </tr>`).join("");
 
   const pending = orders.filter((o) => o.status === "pending");
@@ -398,8 +489,8 @@ admin.get("/orders", ar(async (req, res) => {
   <div class="kpi"><div class="stat-label">Conversion</div><div class="stat">${orders.length ? Math.round((paid.length / orders.length) * 100) + "%" : "—"}</div><div class="hint">of ${orders.length} order${orders.length === 1 ? "" : "s"} created</div></div>
 </div>
 
-${orders.length ? `<div class="tablewrap"><table>
-<thead><tr><th>Summary</th><th>Date</th>${vendorId ? "" : "<th>Vendor</th>"}<th class="r">Amount</th><th>Status</th><th>Reference</th></tr></thead>
+${orders.length ? `<div class="tablewrap wide"><table>
+<thead><tr><th>Summary</th><th>Date</th>${vendorId ? "" : "<th>Vendor</th>"}<th class="r">Amount</th><th>Status</th><th>Reference</th><th></th></tr></thead>
 <tbody>${rows}</tbody></table></div>` : empty("No orders yet", "Orders appear the moment the agent closes a sale.")}`,
     { active: "orders" }));
 }));
@@ -407,9 +498,10 @@ ${orders.length ? `<div class="tablewrap"><table>
 admin.get("/orders/export.csv", ar(async (req, res) => {
   const orders = await fetchOrders(req.query.vendor_id || "");
   const cell = (s) => `"${String(s ?? "").replace(/"/g, '""')}"`;
-  const header = "date,vendor,summary,amount_ghs,status,payment_ref,paid_at\n";
+  const header = "date,vendor,summary,amount_ghs,status,payment_ref,paid_at,delivered_at\n";
   const rows = orders.map((o) => [
-    o.created_at, o.vendors?.shop_name || "", o.summary || "", o.amount, o.status, o.payment_ref || "", o.paid_at || "",
+    o.created_at, o.vendors?.shop_name || "", o.summary || "", o.amount, o.status,
+    o.payment_ref || "", o.paid_at || "", o.delivered_at || "",
   ].map(cell).join(",")).join("\n");
   res.setHeader("Content-Type", "text/csv");
   res.setHeader("Content-Disposition", `attachment; filename="sika-orders${req.query.vendor_id ? "-" + req.query.vendor_id : ""}.csv"`);

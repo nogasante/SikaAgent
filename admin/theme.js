@@ -7,7 +7,7 @@
 // Status hues are reserved for state and never reused as accents.
 import { esc } from "../lib/util.js";
 
-const CSS = `
+export const CSS = `
 /* Self-hosted so no visitor IP is handed to a third-party font CDN, and so the
    page needs no external request on a cold Render instance. */
 @font-face{
@@ -61,11 +61,15 @@ a{color:inherit;text-decoration:none}
 @media(prefers-reduced-motion:reduce){.livedot[data-on="1"]{animation:none}}
 main{margin-left:var(--sidebar);padding:28px 32px 72px;max-width:1320px}
 @media(max-width:899px){
+  /* Wraps rather than overflowing: the bar has to hold the brand, every nav
+     item and the logout button on a 360px phone. */
   .sidebar{position:sticky;inset:0 0 auto 0;width:auto;flex-direction:row;align-items:center;gap:6px;
-    padding:10px 14px;border-right:0;border-bottom:1px solid var(--line);
+    flex-wrap:wrap;padding:10px 14px;border-right:0;border-bottom:1px solid var(--line);
     background:rgba(15,16,17,.9);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
-  .brand{padding:0 10px 0 0;font-size:14px}
-  .nav{flex-direction:row;flex:1;gap:2px}
+  .brand{padding:0 8px 0 0;font-size:14px}
+  .brand span{display:none} /* "Agent" is implied once you're inside */
+  .nav{flex-direction:row;flex:1 1 auto;gap:2px;min-width:0;flex-wrap:wrap}
+  .nav a{padding:7px 9px;font-size:13px}
   .foot{margin:0;padding:0;border:0;gap:6px}
   .foot .muted{display:none} /* the dot alone is enough on a phone */
   main{margin-left:0;padding:20px 16px 56px}
@@ -165,6 +169,8 @@ tr.link td:first-child{position:relative}
 /* ch-based cap, deliberately not widened at large viewports: these tables sit in
    a ~950px column, so a viewport-keyed bump would overflow and clip the last column. */
 .trunc{display:block;max-width:30ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Tables carrying an actions column have less room for prose. */
+.tablewrap.wide .trunc{max-width:20ch}
 .acts{display:flex;gap:6px;justify-content:flex-end}
 
 /* On phones a wide table is unusable, so each row becomes a stacked card and the
@@ -213,7 +219,7 @@ tr.link td:first-child{position:relative}
 ::-webkit-scrollbar-track{background:transparent}
 `;
 
-const FONT = `<link rel="preload" href="/fonts/inter.woff2" as="font" type="font/woff2" crossorigin>`;
+export const FONT = `<link rel="preload" href="/fonts/inter.woff2" as="font" type="font/woff2" crossorigin>`;
 
 // Polls /admin/pulse and reloads when the data behind the page has moved.
 // Deliberately conservative: never reloads while a field is focused or a form
@@ -256,7 +262,7 @@ export function page(title, body, { active = "" } = {}) {
 <title>${esc(title)} · Sika Agent</title>${FONT}<style>${CSS}</style></head><body>
 <aside class="sidebar">
 <div class="brand">💰 Sika <span>Agent</span></div>
-<nav class="nav">${item("/admin", "dashboard", "Vendors")}${item("/admin/orders", "orders", "Orders")}</nav>
+<nav class="nav">${item("/admin", "dashboard", "Vendors")}${item("/admin/orders", "orders", "Orders")}${item("/admin/escalations", "escalations", "Escalations")}</nav>
 <div class="foot"><span class="livedot" id="live"></span><span class="muted" style="font-size:12px">Live</span>
 <form method="post" action="/admin/logout"><button class="btn ghost sm" type="submit">Log out</button></form></div>
 </aside>

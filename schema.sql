@@ -50,9 +50,10 @@ create table orders (
   conversation_id uuid references conversations(id),
   summary text,                     -- "Ankara two-piece, size M, deliver Madina"
   amount int not null,              -- GHS total
-  status text default 'pending',    -- pending | paid | cancelled
+  status text default 'pending',    -- payment only: pending | paid | cancelled
   payment_ref text unique,
   paid_at timestamptz,
+  delivered_at timestamptz,         -- fulfilment, kept off status so revenue totals stay intact
   created_at timestamptz default now()
 );
 

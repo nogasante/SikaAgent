@@ -98,7 +98,7 @@ admin.get("/", ar(async (_req, res) => {
   res.type("html").send(page("Vendors", `
 <div class="head">
   <div><h1>Vendors</h1><p class="sub">${list.length} shop${list.length === 1 ? "" : "s"} running on Sika Agent</p></div>
-  <a class="btn" href="/admin/vendors/new">Add vendor</a>
+  <a class="btn" href="/admin/setup">Add vendor</a>
 </div>
 
 <div class="kpis">
@@ -136,7 +136,7 @@ const CURRENCY_OPTIONS = (() => {
 
 const VALID_CURRENCIES = new Set([...CURRENCY_OPTIONS.common, ...CURRENCY_OPTIONS.rest].map(([c]) => c));
 
-function currencySelect(selected = "GHS") {
+export function currencySelect(selected = "GHS") {
   const opt = ([code, label]) =>
     `<option value="${code}"${code === selected ? " selected" : ""}>${label}</option>`;
   return `<select name="currency">
@@ -146,7 +146,7 @@ function currencySelect(selected = "GHS") {
 }
 
 /** Reject anything not a real ISO code so a typo can't become a price prefix. */
-const cleanCurrency = (v) => {
+export const cleanCurrency = (v) => {
   const c = String(v || "").trim().toUpperCase();
   return VALID_CURRENCIES.has(c) ? c : "GHS";
 };

@@ -209,6 +209,24 @@ tr.link td:first-child{position:relative}
 .msg.agent{background:var(--gold-dim);border:1px solid rgba(255,195,61,.2);align-self:flex-end;border-bottom-right-radius:var(--r-sm)}
 .msg.vendor{background:var(--wash);border:1px solid var(--line-strong);align-self:flex-end;border-bottom-right-radius:var(--r-sm)}
 
+/* ---- guided setup ---- */
+.wizard{max-width:660px;margin:0 auto}
+.steps{display:flex;gap:8px;margin-bottom:26px;list-style:none}
+.steps li{flex:1;display:flex;flex-direction:column;gap:7px;font-size:12px;color:var(--ink-4)}
+.steps li::before{content:"";height:3px;border-radius:99px;background:var(--line-strong)}
+.steps li.on{color:var(--ink)}
+.steps li.on::before{background:var(--gold)}
+.steps li.done{color:var(--ink-3)}
+.steps li.done::before{background:var(--good)}
+.q{padding:18px 0;border-bottom:1px solid var(--line)}
+.q:last-of-type{border-bottom:0}
+.q > label{font-size:14px;color:var(--ink);font-weight:510;margin-bottom:3px}
+.q .help{font-size:12.5px;color:var(--ink-3);margin-bottom:10px;line-height:1.5}
+.q .req{color:var(--gold);margin-left:3px}
+.added{display:flex;justify-content:space-between;gap:12px;align-items:center;
+  background:var(--wash);border:1px solid var(--line);border-radius:var(--r);padding:9px 12px;margin-bottom:6px;font-size:13px}
+.wizard .nav-row{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:22px;flex-wrap:wrap}
+
 /* ---- misc ---- */
 .empty{border:1px dashed var(--line-strong);border-radius:var(--r-card);padding:40px 20px;text-align:center;color:var(--ink-4);font-size:13px}
 .empty b{display:block;color:var(--ink-3);font-weight:510;margin-bottom:4px}

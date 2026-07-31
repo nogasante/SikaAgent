@@ -3,7 +3,7 @@ import { db } from "../lib/db.js";
 import { esc, ar, waFormat } from "../lib/util.js";
 import { ADMIN_PASSWORD } from "../lib/env.js";
 import { requireAuth, setSessionCookie, clearSessionCookie, sessionPayload } from "./session.js";
-import { page, loginPage, pill, empty, ghs } from "./theme.js";
+import { page, loginPage, pill, empty, money } from "./theme.js";
 
 export const adminAuth = express.Router();   // unauthenticated: login/logout
 export const admin = express.Router();       // everything behind requireAuth
@@ -75,12 +75,20 @@ admin.get("/", ar(async (_req, res) => {
   const convos = stats.reduce((s, x) => s + x.convos, 0);
   const escs = stats.reduce((s, x) => s + x.escs, 0);
 
+  // Adding figures across currencies would produce a number that means nothing,
+  // so a combined total is only shown when every shop shares one.
+  const currencies = new Set(list.map((v) => v.currency || "GHS"));
+  const one = currencies.size <= 1 ? ([...currencies][0] || "GHS") : null;
+  const totalRevenue = one ? money(revenue, one) : "—";
+  const revenueHint = one ? "by the agent, all time" : `across ${currencies.size} currencies — see each shop`;
+  const avgOrder = one && orders ? `avg ${money(Math.round(revenue / orders), one)}` : orders ? `${orders} paid` : "none yet";
+
   const rows = list.map((v, i) => `
 <tr class="link" onclick="location='/admin/vendors/${v.id}'">
   <td class="strong"><a class="rowlink" href="/admin/vendors/${v.id}">${esc(v.shop_name)}</a></td>
   <td class="sub" data-l="Owner">${esc(v.owner_name)}</td>
   <td class="sub" data-l="City">${esc(v.city || "—")}</td>
-  <td class="num r strong" data-l="Revenue">${ghs(stats[i].revenue)}</td>
+  <td class="num r strong" data-l="Revenue">${money(stats[i].revenue, v.currency)}</td>
   <td class="num r sub" data-l="Paid orders">${stats[i].orders}</td>
   <td class="num r sub" data-l="Chats">${stats[i].convos}</td>
   <td class="num r" data-l="Escalations">${stats[i].escs ? `<span style="color:var(--bad)">${stats[i].escs}</span>` : `<span class="dim">0</span>`}</td>
@@ -94,8 +102,8 @@ admin.get("/", ar(async (_req, res) => {
 </div>
 
 <div class="kpis">
-  <div class="kpi"><div class="stat-label">Revenue collected</div><div class="hero">${ghs(revenue)}</div><div class="hint">by the agent, all time</div></div>
-  <div class="kpi"><div class="stat-label">Paid orders</div><div class="stat">${orders}</div><div class="hint">${orders ? `avg ${ghs(Math.round(revenue / orders))}` : "none yet"}</div></div>
+  <div class="kpi"><div class="stat-label">Revenue collected</div><div class="hero">${totalRevenue}</div><div class="hint">${revenueHint}</div></div>
+  <div class="kpi"><div class="stat-label">Paid orders</div><div class="stat">${orders}</div><div class="hint">${avgOrder}</div></div>
   <div class="kpi"><div class="stat-label">Conversations</div><div class="stat">${convos}</div><div class="hint">handled end to end</div></div>
   <div class="kpi"><div class="stat-label">Escalations</div><div class="stat${escs ? "" : " q"}" ${escs ? 'style="color:var(--bad)"' : ""}>${escs}</div><div class="hint">${escs ? "waiting on an owner" : "nothing waiting"}</div></div>
 </div>
@@ -108,6 +116,41 @@ ${list.length ? `<div class="tablewrap"><table>
 }));
 
 // ---------- vendor create / edit ----------
+// ISO 4217 straight from the platform — no dependency, no list to go stale.
+// The shops we serve are clustered in a few markets, so those lead.
+const COMMON_CURRENCIES = ["GHS", "NGN", "XOF", "KES", "ZAR", "USD", "EUR", "GBP"];
+
+const CURRENCY_OPTIONS = (() => {
+  const names = new Intl.DisplayNames(["en"], { type: "currency" });
+  const all = typeof Intl.supportedValuesOf === "function"
+    ? Intl.supportedValuesOf("currency")
+    : COMMON_CURRENCIES;
+  const label = (c) => {
+    const n = names.of(c);
+    return esc(n && n !== c ? `${c} — ${n}` : c);
+  };
+  const common = COMMON_CURRENCIES.filter((c) => all.includes(c));
+  const rest = all.filter((c) => !common.includes(c));
+  return { common: common.map((c) => [c, label(c)]), rest: rest.map((c) => [c, label(c)]) };
+})();
+
+const VALID_CURRENCIES = new Set([...CURRENCY_OPTIONS.common, ...CURRENCY_OPTIONS.rest].map(([c]) => c));
+
+function currencySelect(selected = "GHS") {
+  const opt = ([code, label]) =>
+    `<option value="${code}"${code === selected ? " selected" : ""}>${label}</option>`;
+  return `<select name="currency">
+    <optgroup label="Common">${CURRENCY_OPTIONS.common.map(opt).join("")}</optgroup>
+    <optgroup label="All currencies">${CURRENCY_OPTIONS.rest.map(opt).join("")}</optgroup>
+  </select>`;
+}
+
+/** Reject anything not a real ISO code so a typo can't become a price prefix. */
+const cleanCurrency = (v) => {
+  const c = String(v || "").trim().toUpperCase();
+  return VALID_CURRENCIES.has(c) ? c : "GHS";
+};
+
 function vendorForm(v = {}, action = "/admin/vendors") {
   const val = (k) => esc(v[k] ?? "");
   return `<form method="post" action="${action}">
@@ -118,13 +161,14 @@ function vendorForm(v = {}, action = "/admin/vendors") {
     <div class="field"><label>Owner WhatsApp</label><input name="owner_phone" required placeholder="+233XXXXXXXXX" value="${phone(v.owner_phone)}"></div>
     <div class="field"><label>Business line (Twilio)</label><input name="twilio_number" required placeholder="+1415XXXXXXX" value="${phone(v.twilio_number)}"></div>
     <div class="field"><label>City</label><input name="city" placeholder="e.g. Accra" value="${val("city")}"></div>
+    <div class="field"><label>Currency</label>${currencySelect(v.currency || "GHS")}</div>
     <div class="field"><label>Mode</label><select name="is_demo">
       <option value="">Live — real Paystack payments</option>
       <option value="1" ${v.is_demo ? "selected" : ""}>Demo — simulated payments</option>
     </select></div>
   </div>
   <div class="field"><label>Delivery note — the agent quotes this verbatim</label>
-    <textarea name="delivery_note" rows="2" placeholder="e.g. in-town GHS 20, nearby suburb GHS 25, next-day delivery">${val("delivery_note")}</textarea></div>
+    <textarea name="delivery_note" rows="2" placeholder="e.g. in-town 20, nearby suburb 25, next-day delivery">${val("delivery_note")}</textarea></div>
   <div class="field"><label>Tone note — how the agent should sound</label>
     <textarea name="tone_note" rows="2" placeholder="warm, uses emojis, light pidgin ok">${val("tone_note")}</textarea></div>
   ${v.id ? `<div class="field"><label>Status</label><select name="active">
@@ -195,7 +239,7 @@ admin.get("/vendors/:id", ar(async (req, res) => {
   const productRows = (products ?? []).map((p) => `
 <tr>
   <td class="strong">${esc(p.name)}</td>
-  <td class="num r" data-l="Price">GHS ${p.price}</td>
+  <td class="num r" data-l="Price">${money(p.price, vendor.currency)}</td>
   <td class="sub" data-l="Options">${esc(p.options || "—")}</td>
   <td data-l="Stock">${pill(p.in_stock ? "good" : "bad", p.in_stock ? "In stock" : "Out of stock")}</td>
   <td class="r"><div class="acts">
@@ -255,7 +299,7 @@ admin.get("/vendors/:id", ar(async (req, res) => {
   <form method="post" action="/admin/vendors/${id}/products">
     <div class="grid c2">
       <div class="field"><label>Product name</label><input name="name" required placeholder="what you are selling"></div>
-      <div class="field"><label>Price (GHS)</label><input name="price" type="number" min="0" required placeholder="0"></div>
+      <div class="field"><label>Price (${esc(vendor.currency || "GHS")})</label><input name="price" type="number" min="0" required placeholder="0"></div>
       <div class="field"><label>Options</label><input name="options" placeholder="sizes, flavours, shades…"></div>
       <div class="field"><label>Notes for the agent</label><input name="notes" placeholder="best seller"></div>
     </div>
@@ -405,7 +449,7 @@ admin.post("/escalations/resolve-all", ar(async (_req, res) => {
 
 // ---------- orders ----------
 async function fetchOrders(vendorId) {
-  let q = db.from("orders").select("*, vendors(shop_name)").order("created_at", { ascending: false });
+  let q = db.from("orders").select("*, vendors(shop_name, currency)").order("created_at", { ascending: false });
   if (vendorId) q = q.eq("vendor_id", vendorId);
   const { data } = await q;
   return data ?? [];
@@ -459,7 +503,7 @@ admin.get("/orders", ar(async (req, res) => {
   <td><span class="trunc">${esc(o.summary || "—")}</span></td>
   <td class="num sub" data-l="Date">${new Date(o.created_at).toLocaleDateString("en-GB", { day: "2-digit", month: "short" })}</td>
   ${vendorId ? "" : `<td class="sub" data-l="Vendor">${esc(o.vendors?.shop_name || "—")}</td>`}
-  <td class="num r strong" data-l="Amount">GHS ${o.amount}</td>
+  <td class="num r strong" data-l="Amount">${money(o.amount, o.vendors?.currency)}</td>
   <td data-l="Status">${pill(TONE[o.status] ?? "", o.status[0].toUpperCase() + o.status.slice(1))}${
       o.delivered_at ? ` ${pill("good", "Delivered")}` : ""}</td>
   <td class="sub num" data-l="Reference" style="font-size:12px">${esc(o.payment_ref || "—")}</td>
@@ -472,6 +516,9 @@ admin.get("/orders", ar(async (req, res) => {
 
   const pending = orders.filter((o) => o.status === "pending");
   const avg = paid.length ? Math.round(revenue / paid.length) : 0;
+  // Same rule as the dashboard: never add amounts that aren't the same money.
+  const cur = new Set(orders.map((o) => o.vendors?.currency || "GHS"));
+  const one = cur.size <= 1 ? ([...cur][0] || "GHS") : null;
 
   res.type("html").send(page("Orders", `
 <div class="head">
@@ -483,9 +530,9 @@ admin.get("/orders", ar(async (req, res) => {
 </div>
 
 <div class="kpis">
-  <div class="kpi"><div class="stat-label">Paid revenue</div><div class="hero">${ghs(revenue)}</div><div class="hint">${paid.length} paid order${paid.length === 1 ? "" : "s"}</div></div>
-  <div class="kpi"><div class="stat-label">Average order</div><div class="stat">${paid.length ? ghs(avg) : "—"}</div><div class="hint">per paid sale</div></div>
-  <div class="kpi"><div class="stat-label">Awaiting payment</div><div class="stat${pending.length ? "" : " q"}">${pending.length}</div><div class="hint">${pending.length ? ghs(pending.reduce((s, o) => s + o.amount, 0)) + " outstanding" : "nothing pending"}</div></div>
+  <div class="kpi"><div class="stat-label">Paid revenue</div><div class="hero">${one ? money(revenue, one) : "—"}</div><div class="hint">${one ? `${paid.length} paid order${paid.length === 1 ? "" : "s"}` : `${paid.length} paid across ${cur.size} currencies`}</div></div>
+  <div class="kpi"><div class="stat-label">Average order</div><div class="stat">${one && paid.length ? money(avg, one) : "—"}</div><div class="hint">per paid sale</div></div>
+  <div class="kpi"><div class="stat-label">Awaiting payment</div><div class="stat${pending.length ? "" : " q"}">${pending.length}</div><div class="hint">${pending.length && one ? money(pending.reduce((s, o) => s + o.amount, 0), one) + " outstanding" : pending.length ? "outstanding" : "nothing pending"}</div></div>
   <div class="kpi"><div class="stat-label">Conversion</div><div class="stat">${orders.length ? Math.round((paid.length / orders.length) * 100) + "%" : "—"}</div><div class="hint">of ${orders.length} order${orders.length === 1 ? "" : "s"} created</div></div>
 </div>
 

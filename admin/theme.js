@@ -296,4 +296,4 @@ ${failed ? `<div class="banner bad" style="margin-bottom:12px">That password did
 export const pill = (tone, label) => `<span class="pill ${tone}">${esc(label)}</span>`;
 export const empty = (title, hint = "") => `<div class="empty"><b>${esc(title)}</b>${esc(hint)}</div>`;
 /** Money without tabular-nums — these are standalone figures, not a column. */
-export const ghs = (n) => `GHS ${Number(n || 0).toLocaleString("en-GH")}`;
+export { money } from "../lib/util.js";

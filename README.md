@@ -17,11 +17,16 @@ Every decision is written to `agent_logs` with a timestamp — a continuous, aud
 Humans (the founder) do: vendor sales/onboarding, catalog entry, quality spot-checks, and escalation handling support.
 
 ## Stack
-- **Gemini API** (`gemini-flash-latest`) — the decision engine (LLM requirement ✓)
-- **Google Cloud Run** — hosting (Google Cloud requirement ✓), plus Cloud Scheduler for daily reports
+- **Gemini API** (`gemini-flash-latest`, falling back to `gemini-flash-lite-latest`) — the decision engine (LLM requirement ✓)
+- **Render** — hosting, container built from the `Dockerfile`
 - **Twilio WhatsApp Business API** — messaging channel
 - **Supabase** (Postgres) — vendors, catalogs, conversations, orders, logs
-- **Paystack** — GHS payments (mobile money + card), webhook-verified
+- **Paystack** — mobile money + card, webhook-verified (currency is per-vendor, default GHS)
+
+> **Open item:** the competition requires at least one Google Cloud product
+> alongside the Gemini API. The app currently runs on Render, so this is not yet
+> satisfied — the `Dockerfile` is Cloud Run-ready and migrating hosting is the
+> intended fix.
 
 ## Repo contents
 - `server.js` — the entire agent: WhatsApp webhook, Gemini brain, vendor console, Paystack webhook, daily reports, and a browser test cockpit at `/test`

@@ -1,6 +1,6 @@
 import express from "express";
 import { db } from "../lib/db.js";
-import { esc } from "../lib/util.js";
+import { esc, money } from "../lib/util.js";
 import { CSS, FONT } from "../admin/theme.js";
 
 export const testCockpit = express.Router();
@@ -9,7 +9,7 @@ export const testCockpit = express.Router();
 // invented for itself — no real customer's thread is reachable here.
 async function demoVendor() {
   const { data } = await db.from("vendors")
-    .select("id, shop_name, owner_name, city, delivery_note, twilio_number")
+    .select("id, shop_name, owner_name, city, delivery_note, twilio_number, currency")
     .eq("is_demo", true).eq("active", true).limit(1).maybeSingle();
   return data;
 }
@@ -53,7 +53,7 @@ testCockpit.get("/test", async (_req, res) => {
     first && `Do you have the ${first.name}?`,
     first && "What do you sell?",
     out && `Is the ${out.name} available?`,
-    first && `Can you do GHS ${Math.max(1, Math.round(first.price * 0.6))} for the ${first.name}?`,
+    first && `Can you do ${money(Math.max(1, Math.round(first.price * 0.6)), vendor.currency)} for the ${first.name}?`,
   ].filter(Boolean);
 
   // A table is too wide for a 340px rail, so the catalog reads as a list.
@@ -64,7 +64,7 @@ testCockpit.get("/test", async (_req, res) => {
     <div class="muted dim" style="font-size:12px">${esc(p.options || "one option")}</div>
   </div>
   <div style="text-align:right;flex:none">
-    <div class="strong">GHS ${p.price}</div>
+    <div class="strong">${money(p.price, vendor.currency)}</div>
     <span class="pill ${p.in_stock ? "good" : "bad"}" style="margin-top:3px">${p.in_stock ? "In stock" : "Out"}</span>
   </div>
 </div>`).join("");
@@ -146,6 +146,7 @@ body{display:flex;flex-direction:column;height:100dvh;overflow:hidden}
 const chat = document.getElementById('chat'), box = document.getElementById('box');
 const pill = document.getElementById('statePill'), live = document.getElementById('live');
 const TO = ${JSON.stringify(vendor.twilio_number)};
+const CUR = ${JSON.stringify(vendor.currency || 'GHS')};
 
 function num() {
   let n = sessionStorage.n;
@@ -194,7 +195,7 @@ async function refresh() {
 
     if (s.orders.length > seenOrders) {
       const o = s.orders[0];
-      event('order', 'Order created — GHS ' + o.amount);
+      event('order', 'Order created — ' + CUR + ' ' + o.amount);
       seenOrders = s.orders.length;
     }
     if (s.paused && !seenPaused) event('hand', 'Handed to the owner — the agent has stopped replying');
@@ -206,7 +207,7 @@ async function refresh() {
 
     live.innerHTML = s.orders.length
       ? s.orders.map((o) =>
-          '<div class="card" style="padding:11px;margin-bottom:6px"><div class="row"><b style="font-weight:510">GHS ' + o.amount +
+          '<div class="card" style="padding:11px;margin-bottom:6px"><div class="row"><b style="font-weight:510">' + CUR + ' ' + o.amount +
           '</b><span class="pill ' + (o.status === 'paid' ? 'good' : '') + '">' + o.status + '</span></div>' +
           '<div class="muted" style="margin-top:3px">' + (o.summary || '') + '</div></div>').join('')
       : '<p class="muted dim">No order yet.</p>';

@@ -5,7 +5,7 @@ import { sendWhatsApp, sendTemplate, templateSid, canSendOutbound } from "../lib
 import { gemini, buildSystem } from "../lib/gemini.js";
 import { paystackLink } from "../lib/paystack.js";
 import { PAYSTACK_SECRET, CRON_SECRET, CONTENT_SID_PAY_NOW, CONTENT_SID_DEMO_PAY } from "../lib/env.js";
-import { twiml, safeJson } from "../lib/util.js";
+import { twiml, safeJson, money } from "../lib/util.js";
 
 export const webhooks = express.Router();
 
@@ -105,7 +105,7 @@ async function handleInbound(payload, opts) {
       if (order) {
         await db.from("orders").update({ status: "paid", paid_at: new Date().toISOString() }).eq("id", order.id);
         await log(vendor.id, convo.id, "payment_confirmed", { ref: order.payment_ref, amount: order.amount, demo: true });
-        return await say(`Payment received 🎉 GHS ${order.amount} — order confirmed!\n(${vendor.shop_name} demo)`);
+        return await say(`Payment received 🎉 ${money(order.amount, vendor.currency)} — order confirmed!\n(${vendor.shop_name} demo)`);
       }
     }
 
@@ -194,10 +194,10 @@ async function handleInbound(payload, opts) {
           // Just sent it, so don't repeat the whole prompt — but always point at
           // it, since this branch also catches "where is my payment link?".
           await log(vendor.id, convo.id, "pay_prompt_skipped", { payment_ref: order.payment_ref });
-          reply = `${reply ? reply + "\n\n" : ""}The payment link for GHS ${order.amount} is just above ☝️`;
+          reply = `${reply ? reply + "\n\n" : ""}The payment link for ${money(order.amount, vendor.currency)} is just above ☝️`;
         } else if (isWeb || !contentSid) {
           // Cockpit (or no template available): the link goes inline as text.
-          reply += `\n\nPay GHS ${order.amount} securely here (MoMo or card):\n${link}`;
+          reply += `\n\nPay ${money(order.amount, vendor.currency)} securely here (MoMo or card):\n${link}`;
           await log(vendor.id, convo.id, "sent_pay_text", { payment_ref: order.payment_ref });
         } else {
           // Buttons need their own REST message, sent after the prose. If the
@@ -207,8 +207,8 @@ async function handleInbound(payload, opts) {
             const sent = await sendTemplate(vendor.twilio_number, from, contentSid, vars);
             await log(vendor.id, convo.id, sent ? "sent_pay_buttons" : "sent_pay_text", { payment_ref: order.payment_ref });
             const record = sent
-              ? `[Pay GHS ${order.amount} button] ${order.summary || ""}`.trim()
-              : `Pay GHS ${order.amount} securely here (MoMo or card):\n${link}`;
+              ? `[Pay ${money(order.amount, vendor.currency)} button] ${order.summary || ""}`.trim()
+              : `Pay ${money(order.amount, vendor.currency)} securely here (MoMo or card):\n${link}`;
             if (!sent) await say(record);
             await db.from("messages").insert({ conversation_id: convo.id, role: "agent", content: record });
           };
@@ -310,7 +310,7 @@ export async function buildReport(vendor) {
       .eq("vendor_id", vendor.id).gte("created_at", since.toISOString()),
   ]);
   const cedis = (paid ?? []).reduce((s, o) => s + o.amount, 0);
-  return `☀️ ${vendor.shop_name} — today\n💰 GHS ${cedis} collected (${(paid ?? []).length} orders)\n💬 ${msgs ?? 0} customer messages handled\n⚠️ ${escs ?? 0} passed to you\n\nYour AI never slept. — Sika Agent`;
+  return `☀️ ${vendor.shop_name} — today\n💰 ${money(cedis, vendor.currency)} collected (${(paid ?? []).length} orders)\n💬 ${msgs ?? 0} customer messages handled\n⚠️ ${escs ?? 0} passed to you\n\nYour AI never slept. — Sika Agent`;
 }
 
 // ---------- Paystack webhook (payment truth source) ----------
@@ -327,9 +327,9 @@ webhooks.post("/webhook/paystack", express.raw({ type: "*/*" }), async (req, res
       await log(order.vendor_id, order.conversation_id, "payment_confirmed", { ref, amount: order.amount });
       const v = order.vendors;
       await sendWhatsApp(v.twilio_number, order.conversations.customer_number,
-        `Payment received 🎉 GHS ${order.amount} confirmed.\n${order.summary}\n${v.shop_name} thanks you! 💕`);
+        `Payment received 🎉 ${money(order.amount, v.currency)} confirmed.\n${order.summary}\n${v.shop_name} thanks you! 💕`);
       await sendWhatsApp(v.twilio_number, v.owner_phone,
-        `💰 PAID: GHS ${order.amount} — ${order.summary}\nCustomer: ${order.conversations.customer_number.replace("whatsapp:", "")}`);
+        `💰 PAID: ${money(order.amount, v.currency)} — ${order.summary}\nCustomer: ${order.conversations.customer_number.replace("whatsapp:", "")}`);
     }
   }
   res.sendStatus(200);

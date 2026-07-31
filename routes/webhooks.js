@@ -4,7 +4,8 @@ import { db, log } from "../lib/db.js";
 import { sendWhatsApp, sendTemplate, templateSid, canSendOutbound } from "../lib/whatsapp.js";
 import { gemini, buildSystem } from "../lib/gemini.js";
 import { paystackLink } from "../lib/paystack.js";
-import { PAYSTACK_SECRET, CRON_SECRET, CONTENT_SID_PAY_NOW, CONTENT_SID_DEMO_PAY } from "../lib/env.js";
+import { PAYSTACK_SECRET, CRON_SECRET, CONTENT_SID_PAY_NOW, CONTENT_SID_DEMO_PAY,
+         CONTENT_SID_CHOOSE_2, CONTENT_SID_CHOOSE_3 } from "../lib/env.js";
 import { twiml, safeJson, money } from "../lib/util.js";
 
 export const webhooks = express.Router();
@@ -140,6 +141,36 @@ async function handleInbound(payload, opts) {
     // Tolerant matchers: allow whitespace/fences and grab the JSON object.
     const escalate = raw.match(/ACTION_ESCALATE\s*(\{[\s\S]*?\})/);
     const ord = raw.match(/ACTION_ORDER\s*(\{[\s\S]*?\})/);
+    const choose = raw.match(/ACTION_CHOICES\s*(\{[\s\S]*?\})/);
+    const menu = raw.match(/ACTION_MENU\s*(\{[\s\S]*?\})?/);
+
+    // The catalog as a WhatsApp list message: one "View items" button that opens
+    // a scrollable menu. Rows are fixed per template, so there is one template
+    // per catalog size and we pick the matching one.
+    let inStock = null;
+    if (menu && !ord && !escalate && !choose) {
+      inStock = (products ?? []).filter((p) => p.in_stock).slice(0, 10);
+      if (inStock.length >= 2) reply = raw.slice(0, menu.index).trim();
+      else inStock = null; // one item is not a menu
+    }
+
+    // A pick-one question becomes tappable buttons. Three is WhatsApp's limit for
+    // an in-session template, and a label must stand alone because tapping sends
+    // exactly that text back as the customer's next message.
+    let choices = null;
+    if (choose && !ord && !escalate) {
+      const parsed = safeJson(choose[1])?.options;
+      if (Array.isArray(parsed)) {
+        const clean = parsed
+          .map((o) => String(o ?? "").trim().slice(0, 20))
+          .filter(Boolean)
+          .slice(0, 3);
+        if (clean.length >= 2) {
+          reply = raw.slice(0, choose.index).trim();
+          choices = clean;
+        }
+      }
+    }
 
     if (ord) {
       reply = raw.slice(0, ord.index).trim();
@@ -248,9 +279,55 @@ async function handleInbound(payload, opts) {
     // follow-up, so promising one is how the agent ends up stalling a customer.
     if (!reply) reply = `Sorry, I didn't quite get that — could you put it another way? 🙏`;
 
+    // Offer the choices as buttons where we can; everywhere else (the cockpit, or
+    // no Twilio credentials) they become a numbered list so the question still
+    // makes sense and the customer can just type the answer.
+    // Separate templates per count: padding a two-option question into the
+    // three-button template would show the same answer twice.
+    let choiceSid = null;
+    if (choices && !isWeb) {
+      choiceSid = choices.length >= 3
+        ? (CONTENT_SID_CHOOSE_3 || await templateSid("sika_choose_3"))
+        : (CONTENT_SID_CHOOSE_2 || await templateSid("sika_choose_2"));
+    }
+    if (choices && !choiceSid) {
+      reply += `\n\n${choices.map((c, i) => `${i + 1}. ${c}`).join("\n")}`;
+    }
+
+    const menuSid = inStock && !isWeb ? await templateSid(`sika_menu_${inStock.length}`) : null;
+    if (inStock && !menuSid) {
+      // No list message available — write the catalog out instead, so asking
+      // "what do you sell?" is never answered with nothing.
+      reply += `\n\n${inStock.map((p) => `*${p.name}* — ${money(p.price, vendor.currency)}`).join("\n")}`;
+    }
+
     await db.from("messages").insert({ conversation_id: convo.id, role: "agent", content: reply });
     await log(vendor.id, convo.id, "replied", { chars: reply.length });
-    await say(reply);
+
+    if (menuSid) {
+      // Rows are {{2}}/{{3}}, {{4}}/{{5}}, … — title then description per item.
+      const vars = { 1: reply || "Here is what we have today" };
+      inStock.forEach((p, i) => {
+        vars[2 + i * 2] = p.name.slice(0, 24);
+        vars[3 + i * 2] = `${money(p.price, vendor.currency)}${p.options ? ` · ${p.options}` : ""}`.slice(0, 72);
+      });
+      const sent = await sendTemplate(vendor.twilio_number, from, menuSid, vars);
+      await log(vendor.id, convo.id, sent ? "sent_menu" : "menu_failed", { items: inStock.length });
+      if (!sent) {
+        await say(`${reply}\n\n${inStock.map((p) => `*${p.name}* — ${money(p.price, vendor.currency)}`).join("\n")}`);
+      }
+    } else if (choiceSid) {
+      // The template carries the question itself, so it replaces the text reply
+      // rather than following it — two copies of the same question reads badly.
+      const vars = choices.length >= 3
+        ? { 1: reply || "Please choose:", 2: choices[0], 3: choices[1], 4: choices[2] }
+        : { 1: reply || "Please choose:", 2: choices[0], 3: choices[1] };
+      const sent = await sendTemplate(vendor.twilio_number, from, choiceSid, vars);
+      await log(vendor.id, convo.id, sent ? "sent_choices" : "choices_failed", { options: choices });
+      if (!sent) await say(`${reply}\n\n${choices.map((c, i) => `${i + 1}. ${c}`).join("\n")}`);
+    } else {
+      await say(reply);
+    }
 
     // The tappable prompt follows the prose so the conversation reads in order.
     if (payNow) await payNow();

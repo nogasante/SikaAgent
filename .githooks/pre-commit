@@ -1,0 +1,9 @@
+#!/bin/sh
+# Gate the commit on what it reaches, not on everything wrong with the repo.
+# Only findings the staged change actually touches exit non-zero, so this never
+# becomes the hook everyone bypasses with --no-verify.
+command -v blastradius >/dev/null 2>&1 || exit 0
+blastradius --staged "$(git rev-parse --show-toplevel)" || {
+  echo "commit blocked — pass --no-verify if you have a reason"
+  exit 1
+}

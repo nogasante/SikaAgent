@@ -26,6 +26,19 @@ create table products (
   created_at timestamptz default now()
 );
 
+-- Where the shop delivers and what it charges. Structured rather than prose so
+-- the agent quotes an exact fee, and so a customer can pick from a list message
+-- (up to 10) instead of the 3 a quick-reply allows.
+create table delivery_zones (
+  id uuid primary key default gen_random_uuid(),
+  vendor_id uuid references vendors(id) on delete cascade,
+  name text not null,               -- "Accra", "Madina", "Nationwide bus parcel"
+  fee int not null default 0,       -- in the vendor's currency
+  eta text,                         -- "next day", "same day before 4pm"
+  active boolean default true,
+  created_at timestamptz default now()
+);
+
 create table conversations (
   id uuid primary key default gen_random_uuid(),
   vendor_id uuid references vendors(id) on delete cascade,
@@ -76,5 +89,6 @@ create table agent_logs (
   created_at timestamptz default now()
 );
 
+create index idx_zones_vendor on delivery_zones(vendor_id, active);
 create index idx_msgs_convo on messages(conversation_id, created_at);
 create index idx_logs_time on agent_logs(created_at);

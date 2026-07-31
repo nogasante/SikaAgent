@@ -220,10 +220,11 @@ admin.post("/vendors/:id/delete", ar(async (req, res) => {
 // ---------- vendor detail ----------
 admin.get("/vendors/:id", ar(async (req, res) => {
   const { id } = req.params;
-  const [{ data: vendor }, { data: products }, { data: convos }] = await Promise.all([
+  const [{ data: vendor }, { data: products }, { data: convos }, { data: zones }] = await Promise.all([
     db.from("vendors").select("*").eq("id", id).single(),
     db.from("products").select("*").eq("vendor_id", id).order("created_at", { ascending: true }),
     db.from("conversations").select("*").eq("vendor_id", id).order("created_at", { ascending: false }),
+    db.from("delivery_zones").select("*").eq("vendor_id", id).order("fee", { ascending: true }),
   ]);
   if (!vendor) return res.status(404).type("html").send(page("Not found", `<h1>Vendor not found</h1>`));
 
@@ -307,6 +308,33 @@ admin.get("/vendors/:id", ar(async (req, res) => {
   </form>
   </div>
 
+  <h2>Delivery zones</h2>
+  ${(zones ?? []).length ? `<div class="tablewrap wide">
+  <table><thead><tr><th>Place</th><th class="r">Fee</th><th>Arrives</th><th>Status</th><th></th></tr></thead>
+  <tbody>${(zones ?? []).map((z) => `
+  <tr>
+    <td class="strong">${esc(z.name)}</td>
+    <td class="num r" data-l="Fee">${money(z.fee, vendor.currency)}</td>
+    <td class="sub" data-l="Arrives">${esc(z.eta || "—")}</td>
+    <td data-l="Status">${pill(z.active ? "good" : "", z.active ? "Offered" : "Off")}</td>
+    <td class="r"><div class="acts">
+      <form class="inline" method="post" action="/admin/vendors/${id}/zones/${z.id}/toggle"><button class="btn ghost sm" type="submit">${z.active ? "Turn off" : "Turn on"}</button></form>
+      <form class="inline" method="post" action="/admin/vendors/${id}/zones/${z.id}/delete" onsubmit="return confirm('Remove ${esc(z.name).replace(/'/g, "\\'")}?')"><button class="btn danger sm" type="submit">Remove</button></form>
+    </div></td>
+  </tr>`).join("")}</tbody></table></div>`
+    : empty("No delivery zones", "Add them and the agent quotes exact fees instead of reading your note.")}
+
+  <div class="card pad" style="margin-top:8px">
+  <form method="post" action="/admin/vendors/${id}/zones">
+    <div class="grid c3">
+      <div class="field"><label>Place</label><input name="name" required placeholder="e.g. Accra"></div>
+      <div class="field"><label>Fee (${esc(vendor.currency || "GHS")})</label><input name="fee" type="number" min="0" required placeholder="0"></div>
+      <div class="field"><label>Arrives</label><input name="eta" placeholder="next day"></div>
+    </div>
+    <button class="btn" type="submit">Add zone</button>
+  </form>
+  </div>
+
   <h2>Conversations</h2>
   ${convoRows ? `<div class="tablewrap">
   <table><thead><tr><th>Customer</th><th>Last message</th><th class="r">Msgs</th><th class="r">Age</th><th class="r">AI</th></tr></thead>
@@ -318,6 +346,31 @@ admin.get("/vendors/:id", ar(async (req, res) => {
   ${vendorForm(vendor, `/admin/vendors/${id}/edit`)}
 </div>
 </div>`, { active: "dashboard" }));
+}));
+
+// ---------- delivery zones ----------
+admin.post("/vendors/:id/zones", form, ar(async (req, res) => {
+  const b = req.body;
+  if (String(b.name || "").trim()) {
+    await db.from("delivery_zones").insert({
+      vendor_id: req.params.id,
+      name: String(b.name).trim(),
+      fee: Math.max(0, Math.round(Number(b.fee) || 0)),
+      eta: String(b.eta || "").trim() || null,
+    });
+  }
+  res.redirect(`/admin/vendors/${req.params.id}`);
+}));
+
+admin.post("/vendors/:vid/zones/:zid/toggle", ar(async (req, res) => {
+  const { data: z } = await db.from("delivery_zones").select("active").eq("id", req.params.zid).maybeSingle();
+  if (z) await db.from("delivery_zones").update({ active: !z.active }).eq("id", req.params.zid);
+  res.redirect(`/admin/vendors/${req.params.vid}`);
+}));
+
+admin.post("/vendors/:vid/zones/:zid/delete", ar(async (req, res) => {
+  await db.from("delivery_zones").delete().eq("id", req.params.zid);
+  res.redirect(`/admin/vendors/${req.params.vid}`);
 }));
 
 // ---------- catalog mutations ----------

@@ -116,14 +116,16 @@ async function handleInbound(payload, opts) {
     let historyQuery = db.from("messages").select("role, content").eq("conversation_id", convo.id);
     if (convo.ai_resumed_at) historyQuery = historyQuery.gte("created_at", convo.ai_resumed_at);
 
-    const [{ data: products }, { data: history }, { data: pastOrders }] = await Promise.all([
+    const [{ data: products }, { data: history }, { data: pastOrders }, { data: zones }] = await Promise.all([
       db.from("products").select("*").eq("vendor_id", vendor.id),
       historyQuery.order("created_at", { ascending: true }).limit(24),
       db.from("orders").select("summary, amount, status, paid_at, payment_ref")
         .eq("conversation_id", convo.id).order("created_at", { ascending: false }).limit(5),
+      db.from("delivery_zones").select("name, fee, eta")
+        .eq("vendor_id", vendor.id).eq("active", true).order("fee", { ascending: true }),
     ]);
 
-    const raw = await gemini(buildSystem(vendor, products ?? [], pastOrders ?? []), history ?? []);
+    const raw = await gemini(buildSystem(vendor, products ?? [], pastOrders ?? [], zones ?? []), history ?? []);
 
     // Model unreachable (quota/outage) — say something neutral and keep the
     // thread live so the next message retries. Do NOT claim we misunderstood
@@ -152,6 +154,16 @@ async function handleInbound(payload, opts) {
       inStock = (products ?? []).filter((p) => p.in_stock).slice(0, 10);
       if (inStock.length >= 2) reply = raw.slice(0, menu.index).trim();
       else inStock = null; // one item is not a menu
+    }
+
+    // Delivery uses the same list control: a shop can serve more places than the
+    // three a quick-reply allows, and the fee has to come from the zone, not prose.
+    const zonesTag = raw.match(/ACTION_ZONES\s*(\{[\s\S]*?\})?/);
+    let pickZones = null;
+    if (zonesTag && !ord && !escalate && !choose && !inStock) {
+      pickZones = (zones ?? []).slice(0, 10);
+      if (pickZones.length >= 2) reply = raw.slice(0, zonesTag.index).trim();
+      else pickZones = null;
     }
 
     // A pick-one question becomes tappable buttons. Three is WhatsApp's limit for
@@ -294,28 +306,34 @@ async function handleInbound(payload, opts) {
       reply += `\n\n${choices.map((c, i) => `${i + 1}. ${c}`).join("\n")}`;
     }
 
-    const menuSid = inStock && !isWeb ? await templateSid(`sika_menu_${inStock.length}`) : null;
-    if (inStock && !menuSid) {
-      // No list message available — write the catalog out instead, so asking
-      // "what do you sell?" is never answered with nothing.
-      reply += `\n\n${inStock.map((p) => `*${p.name}* — ${money(p.price, vendor.currency)}`).join("\n")}`;
+    // Both lists share the sika_menu_<n> templates — same control, different rows.
+    const listRows = inStock
+      ? inStock.map((p) => [p.name, `${money(p.price, vendor.currency)}${p.options ? ` · ${p.options}` : ""}`])
+      : pickZones
+        ? pickZones.map((z) => [z.name, `${money(z.fee, vendor.currency)}${z.eta ? ` · ${z.eta}` : ""}`])
+        : null;
+
+    const listSid = listRows && !isWeb ? await templateSid(`sika_menu_${listRows.length}`) : null;
+    if (listRows && !listSid) {
+      // No list message available — write the options out instead, so the
+      // question is never answered with nothing.
+      reply += `\n\n${listRows.map(([t, d]) => `*${t}* — ${d}`).join("\n")}`;
     }
 
     await db.from("messages").insert({ conversation_id: convo.id, role: "agent", content: reply });
     await log(vendor.id, convo.id, "replied", { chars: reply.length });
 
-    if (menuSid) {
-      // Rows are {{2}}/{{3}}, {{4}}/{{5}}, … — title then description per item.
-      const vars = { 1: reply || "Here is what we have today" };
-      inStock.forEach((p, i) => {
-        vars[2 + i * 2] = p.name.slice(0, 24);
-        vars[3 + i * 2] = `${money(p.price, vendor.currency)}${p.options ? ` · ${p.options}` : ""}`.slice(0, 72);
+    if (listSid) {
+      // Rows are {{2}}/{{3}}, {{4}}/{{5}}, … — title then description per row.
+      const vars = { 1: reply || "Please choose:" };
+      listRows.forEach(([title, desc], i) => {
+        vars[2 + i * 2] = String(title).slice(0, 24);
+        vars[3 + i * 2] = String(desc).slice(0, 72);
       });
-      const sent = await sendTemplate(vendor.twilio_number, from, menuSid, vars);
-      await log(vendor.id, convo.id, sent ? "sent_menu" : "menu_failed", { items: inStock.length });
-      if (!sent) {
-        await say(`${reply}\n\n${inStock.map((p) => `*${p.name}* — ${money(p.price, vendor.currency)}`).join("\n")}`);
-      }
+      const sent = await sendTemplate(vendor.twilio_number, from, listSid, vars);
+      await log(vendor.id, convo.id, sent ? "sent_list" : "list_failed",
+                { kind: inStock ? "catalog" : "zones", rows: listRows.length });
+      if (!sent) await say(`${reply}\n\n${listRows.map(([t, d]) => `*${t}* — ${d}`).join("\n")}`);
     } else if (choiceSid) {
       // The template carries the question itself, so it replaces the text reply
       // rather than following it — two copies of the same question reads badly.

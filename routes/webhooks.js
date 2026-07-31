@@ -57,7 +57,7 @@ webhooks.post("/webhook/whatsapp", express.urlencoded({ extended: false }), (req
 async function handleInbound(payload, opts) {
   const from = payload.From ?? "";
   const to = payload.To ?? "";
-  const body = (payload.Body ?? "").trim();
+  let body = (payload.Body ?? "").trim();
   // Set by a tapped quick-reply button; more reliable than matching the label.
   const buttonId = payload.ButtonPayload ?? "";
   const isWeb = !!opts.web;
@@ -92,6 +92,22 @@ async function handleInbound(payload, opts) {
       .select().single();
     if (!convo) return;
     convoId = convo.id;
+
+    // A tapped list row arrives as its id ("row_2"), which means nothing to the
+    // model — and reading it as the first row would silently pick the wrong
+    // delivery zone. Translate it back to the label we actually showed.
+    const rowTap = body.match(/^row_(\d+)$/i);
+    if (rowTap) {
+      const { data: lastList } = await db.from("agent_logs").select("detail")
+        .eq("conversation_id", convo.id).eq("action", "sent_list")
+        .order("created_at", { ascending: false }).limit(1).maybeSingle();
+      const label = lastList?.detail?.rows?.[Number(rowTap[1]) - 1];
+      if (label) {
+        await log(vendor.id, convo.id, "row_resolved", { id: body, label });
+        body = label;
+      }
+    }
+
     await db.from("messages").insert({ conversation_id: convo.id, role: "customer", content: body });
     await log(vendor.id, convo.id, "received", { from, body });
 
@@ -331,8 +347,11 @@ async function handleInbound(payload, opts) {
         vars[3 + i * 2] = String(desc).slice(0, 72);
       });
       const sent = await sendTemplate(vendor.twilio_number, from, listSid, vars);
+      // Record the row labels in order: tapping a list row sends the row's id
+      // ("row_2"), not its title, so the next inbound message has to be
+      // translated back through this.
       await log(vendor.id, convo.id, sent ? "sent_list" : "list_failed",
-                { kind: inStock ? "catalog" : "zones", rows: listRows.length });
+                { kind: inStock ? "catalog" : "zones", rows: listRows.map(([t]) => t) });
       if (!sent) await say(`${reply}\n\n${listRows.map(([t, d]) => `*${t}* — ${d}`).join("\n")}`);
     } else if (choiceSid) {
       // The template carries the question itself, so it replaces the text reply

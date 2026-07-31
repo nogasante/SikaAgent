@@ -1,0 +1,81 @@
+{
+  "_comment": "Things about this system that are true whether or not anyone remembers them. Every entry below was learned by shipping the mistake. Read by `blastradius --brief` before a change.",
+
+  "constraints": [
+    {
+      "id": "webhook-timeout",
+      "applies_to": ["routes/webhooks.js", "lib/gemini.js"],
+      "rule": "The WhatsApp webhook must send its HTTP response in well under 15 seconds",
+      "because": "Twilio abandons the request at ~15s (error 11200) and the customer receives no reply at all — the agent looks broken to them while the logs look fine to you",
+      "learned": "Raising maxOutputTokens to 2048 took one turn to 25s. The customer's 'yes confirm' got no answer, and they messaged again asking where the payment link was."
+    },
+    {
+      "id": "thinking-tokens-count",
+      "applies_to": ["lib/gemini.js"],
+      "rule": "gemini-flash-latest is a thinking model and its reasoning is billed against maxOutputTokens",
+      "because": "A budget sized for the visible reply gets consumed by reasoning, and the message is truncated mid-word on its way to a customer",
+      "learned": "At 700 tokens replies ended '...delivery to Kum'. This endpoint also rejects thinkingConfig with 400, so thinking cannot simply be turned off."
+    },
+    {
+      "id": "outbound-needs-credentials",
+      "applies_to": ["lib/whatsapp.js", "routes/webhooks.js"],
+      "rule": "Anything sent over the Twilio REST API needs TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN; a TwiML reply needs neither",
+      "because": "Twilio delivers a TwiML reply itself. Moving a reply to the REST API adds an authentication requirement that the old path never had, and a 401 is invisible to the customer and to the panel",
+      "learned": "Replies were moved out of band while production had no Twilio credentials. Every reply 401'd for hours: the agent generated and stored answers the customer never received."
+    },
+    {
+      "id": "list-rows-return-ids",
+      "applies_to": ["routes/webhooks.js"],
+      "rule": "A tapped WhatsApp list row arrives as its row id; a tapped quick-reply arrives as its label",
+      "because": "Treating a row id as the answer picks whatever happens to be first, which prices the order wrongly and silently",
+      "learned": "Tapping a delivery zone sent 'row_1'. It answered correctly only because the cheapest zone sorts first; the third zone would have been billed at the first zone's fee."
+    },
+    {
+      "id": "twilio-trial-cap",
+      "applies_to": ["lib/whatsapp.js"],
+      "rule": "A Twilio trial account sends at most 50 messages per rolling 24 hours",
+      "because": "Past the cap every send is refused with error 63038, which looks exactly like a broken agent from the outside",
+      "learned": "A day of testing spent the cap. Diagnosing it took an hour because a refused send left no trace in the app at all."
+    }
+  ],
+
+  "invariants": [
+    {
+      "id": "revenue-definition",
+      "rule": "Revenue is orders where status = 'paid'. Payment status belongs to the Paystack webhook",
+      "because": "Several queries across the panel and the daily report define revenue this way, and it is the number the business is judged on",
+      "never": "Add a value to orders.status without checking every query that filters it. Fulfilment and other axes get their own column — delivered_at exists for exactly this reason.",
+      "learned": "A 'delivered' status was one commit from shipping. It would have removed paid orders from every revenue total, quietly."
+    },
+    {
+      "id": "router-guards",
+      "applies_to": ["admin/**", "server.js"],
+      "rule": "Every router mounted under /admin applies requireAuth itself",
+      "because": "Express middleware is per-router, so a new router under a guarded prefix inherits nothing",
+      "never": "Mount a router at /admin and assume the admin router's guard covers it",
+      "learned": "The setup wizard was mounted unguarded. Vendor creation was reachable with no session until it was caught before deploy."
+    },
+    {
+      "id": "catalog-is-the-only-truth",
+      "applies_to": ["lib/gemini.js"],
+      "rule": "The agent sells only what is in that vendor's catalog and quotes only that vendor's delivery zones",
+      "because": "An invented product or price is a promise the shop has to honour or break, and it destroys the trust the whole product runs on",
+      "never": "Put a concrete product, price or place in the prompt as an example — it primes the model to offer it to a vendor who does not stock it",
+      "learned": "Examples used one shop's real products. A test food vendor was at risk of being offered clothing."
+    },
+    {
+      "id": "mirror-never-lead",
+      "applies_to": ["lib/gemini.js"],
+      "rule": "The agent matches the customer's language and register; it never opens in pidgin",
+      "because": "A tone note permitting pidgin is permission to match it, not to choose it — the customer may not speak it",
+      "learned": "A customer writing plain English was answered in pidgin because the shop's tone note allowed it."
+    },
+    {
+      "id": "failures-must-be-visible",
+      "applies_to": ["routes/webhooks.js", "admin/**"],
+      "rule": "A send that does not reach the customer is recorded and surfaced in the panel",
+      "because": "A silent failure is indistinguishable from a broken agent, and costs hours to diagnose from the outside",
+      "learned": "A spent message quota looked identical to a broken agent: the panel showed a reply, the phone showed nothing, and the only evidence was in the Twilio console."
+    }
+  ]
+}
